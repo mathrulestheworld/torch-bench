@@ -19,6 +19,10 @@ _PATTERNS = [
     (re.compile(r"\b((?i:PIN|code))(\s+)(?=[A-Z0-9]*[A-Z])([A-Z0-9]{6,12})\b"), r"\1\2" + MASK),
     # "password: hunter2" style echoes, should a prompt ever echo.
     (re.compile(r"(?i)(pass(?:word|phrase|code)[^:\n]{0,40}:[ \t]*)(\S+)"), r"\1" + MASK),
+    # Access tokens by their well-known shapes (Hugging Face, OpenAI-style, GitHub, Slack).
+    (re.compile(r"\b(hf_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})"), MASK),
+    # NAME=value where the name says it is a secret: export HF_TOKEN=..., API_KEY=..., --password=...
+    (re.compile(r"(?i)\b([A-Z0-9_-]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY)[A-Z0-9_-]*\s*=\s*)(\S+)"), r"\1" + MASK),
 ]
 
 

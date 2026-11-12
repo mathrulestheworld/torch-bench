@@ -7,7 +7,8 @@
   var main = document.getElementById("main");
   var S = {
     state: null, view: "jobs", dash: null, dashSig: "", dashAt: 0, open: {}, details: {}, disk: null,
-    wizard: 0, form: {}, cmds: [], cmdLast: 0, showRoutine: false, timers: {}, signin: null
+    wizard: 0, form: {}, cmds: [], cmdLast: 0, showRoutine: false, timers: {}, signin: null,
+    arg: "", fileGen: 0, term: null, termGen: 0, jobLogs: {}
   };
 
   // ---- small helpers -------------------------------------------------------------------------
@@ -49,6 +50,13 @@
     if (seconds < 129600) { var hrs = seconds / 3600; return (hrs >= 10 ? Math.round(hrs) : Math.round(hrs * 10) / 10) + " h"; }
     var d = seconds / 86400; return (d >= 10 ? Math.round(d) : Math.round(d * 10) / 10) + " days";
   }
+  function bytes(n) {
+    if (n == null) return "";
+    if (n < 1024) return n + " B";
+    var units = ["KB", "MB", "GB", "TB"], v = n / 1024, i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (v >= 100 ? Math.round(v) : Math.round(v * 10) / 10) + " " + units[i];
+  }
   function ago(seconds) { return seconds == null ? "" : seconds < 5 ? "just now" : dur(seconds) + " ago"; }
   function stop(name) { if (S.timers[name]) { clearTimeout(S.timers[name]); S.timers[name] = null; } }
   function later(name, ms, fn) { stop(name); S.timers[name] = setTimeout(fn, ms); }
@@ -65,7 +73,8 @@
     tabs.hidden = !ready; conn.hidden = !ready;
     if (!ready) return;
     Array.prototype.forEach.call(tabs.querySelectorAll("a"), function (a) {
-      if (a.getAttribute("data-view") === S.view) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+      var here = S.view === "file" ? "files" : S.view;
+      if (a.getAttribute("data-view") === here) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
     var connected = S.dash ? S.dash.connected : st.connected;
     conn.replaceChildren(
@@ -360,6 +369,22 @@
       slot.appendChild(h("details", { class: "more" }, h("summary", {}, "Exactly what Torch said"), h("div", {}, h("pre", { class: "raw" }, det.raw))));
     }
     body.appendChild(slot);
+    var logs = S.jobLogs[id], logSlot = h("div", { class: "detail" });
+    if (!logs) {
+      logSlot.appendChild(h("button", { class: "quiet small", onclick: function (e) {
+        e.target.disabled = true; e.target.textContent = "Looking in the project's logs folder";
+        api("GET", "/api/job/logs?id=" + encodeURIComponent(id)).then(function (r) { S.jobLogs[id] = r; drawJobs(true); }, function (x) { S.jobLogs[id] = { ok: false, error: x.message }; drawJobs(true); });
+      } }, "Find this job's log files"));
+    } else if (!logs.ok) {
+      logSlot.appendChild(h("p", { class: "hint" }, logs.error));
+    } else if (!logs.files.length) {
+      logSlot.appendChild(h("p", { class: "hint" }, "No file in the project's logs folder has " + id.split("_")[0] + " in its name."));
+    } else {
+      logSlot.appendChild(h("ul", { class: "loglist" }, logs.files.slice(0, 40).map(function (f) {
+        return h("li", {}, h("a", { href: "#file/" + encodeURIComponent(f.rel) }, f.name), h("span", { class: "hint" }, "  " + bytes(f.size) + ", changed " + f.modified)); })));
+      if (logs.files.length > 40) logSlot.appendChild(h("p", { class: "hint" }, "and " + (logs.files.length - 40) + " more, in the logs folder under Files"));
+    }
+    body.appendChild(logSlot);
     return body;
   }
 
@@ -498,7 +523,8 @@
       h("h2", {}, "NYU pages you may need"),
       h("ul", { class: "links" }, (cfg.help_links || []).map(function (l) { return h("li", {}, h("a", { href: l.url, target: "_blank", rel: "noopener" }, l.title), h("p", {}, l.note)); })),
       h("h2", {}, "What Torch Bench does and does not do"),
-      h("p", {}, "This version only looks: it reads the queue, your job history, your fair-share standing, GPU availability and your storage quota. It cannot submit, cancel, change or delete anything on Torch."),
+      h("p", {}, "By itself, Torch Bench only looks: it reads the queue, your job history, your fair-share standing, GPU availability, your storage quota, and the files in the project folder. It cannot submit, cancel, change or delete anything on Torch."),
+      h("p", {}, "The Terminal page is the one exception, on purpose: it is a real shell on Torch, and what you type there you do as yourself. Torch Bench never types there, and it keeps a record of what appeared on screen."),
       h("p", {}, "It never stores a password or a code. Signing in happens on Microsoft's page and on your phone; Torch Bench then shares that one sign-in, which you can close at any time with Disconnect."),
       h("p", {}, "Every command it runs is listed on the Commands page."),
       h("h2", {}, "Your settings"),
@@ -519,15 +545,297 @@
       h("p", { class: "hint" }, "Torch Bench " + st.version)));
   }
 
+  // ---- a small, safe Markdown renderer (builds page elements; never innerHTML) ----------------
+  function mdInline(el, text) {
+    var re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*\s][^*]*\*)|(\[[^\]]+\]\([^)\s]+\))/g, last = 0, m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) add(el, text.slice(last, m.index));
+      var t = m[0];
+      if (m[1]) add(el, h("code", {}, t.slice(1, -1)));
+      else if (m[2]) { var b = h("strong", {}); mdInline(b, t.slice(2, -2)); add(el, b); }
+      else if (m[3]) { var i = h("em", {}); mdInline(i, t.slice(1, -1)); add(el, i); }
+      else {
+        var mm = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(t);
+        if (mm && /^(https:\/\/|http:\/\/|mailto:)/i.test(mm[2])) add(el, h("a", { href: mm[2], target: "_blank", rel: "noopener" }, mm[1]));
+        else add(el, mm ? mm[1] : t);          // any other kind of link is shown as plain words
+      }
+      last = m.index + t.length;
+    }
+    if (last < text.length) add(el, text.slice(last));
+    return el;
+  }
+  function mdRender(text) {
+    var out = h("div", { class: "md" }), lines = text.replace(/\r/g, "").split("\n"), i = 0;
+    function cells(line) { return line.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(function (c) { return c.trim(); }); }
+    while (i < lines.length) {
+      var line = lines[i], m;
+      if (/^\s*$/.test(line)) { i++; continue; }
+      if (/^```/.test(line)) {
+        var code = []; i++;
+        while (i < lines.length && !/^```/.test(lines[i])) code.push(lines[i++]);
+        i++; add(out, h("pre", { class: "raw" }, code.join("\n"))); continue;
+      }
+      if ((m = /^(#{1,6})\s+(.*)$/.exec(line))) { add(out, mdInline(h("h" + Math.min(6, m[1].length + 1), {}), m[2].replace(/\s+#+\s*$/, ""))); i++; continue; }
+      if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) { add(out, h("hr")); i++; continue; }
+      if (/^\s*>/.test(line)) {
+        var q = [];
+        while (i < lines.length && /^\s*>/.test(lines[i])) q.push(lines[i++].replace(/^\s*>\s?/, ""));
+        add(out, mdInline(h("blockquote", {}), q.join(" "))); continue;
+      }
+      if (/\|/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+        var head = cells(line), align = cells(lines[i + 1]).map(function (c) { return /:$/.test(c) ? (/^:/.test(c) ? "center" : "right") : "left"; }), rows = [];
+        i += 2;
+        while (i < lines.length && /\|/.test(lines[i]) && !/^\s*$/.test(lines[i])) rows.push(cells(lines[i++]));
+        add(out, h("div", { class: "table-wrap" }, h("table", { class: "grid" },
+          h("thead", {}, h("tr", {}, head.map(function (c, k) { return mdInline(h("th", { scope: "col", style: "text-align:" + (align[k] || "left") }), c); }))),
+          h("tbody", {}, rows.map(function (r) { return h("tr", {}, r.map(function (c, k) { return mdInline(h("td", { style: "text-align:" + (align[k] || "left") }), c); })); })))));
+        continue;
+      }
+      if ((m = /^\s*([-*+]|\d+[.)])\s+/.exec(line))) {
+        var ordered = /\d/.test(m[1]), list = h(ordered ? "ol" : "ul", {}), itemRe = ordered ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*+]\s+(.*)$/, mi;
+        while (i < lines.length && (mi = itemRe.exec(lines[i]))) {
+          var textOf = mi[1]; i++;
+          while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !itemRe.test(lines[i])) textOf += " " + lines[i++].trim();
+          add(list, mdInline(h("li", {}), textOf));
+        }
+        add(out, list); continue;
+      }
+      var para = [];
+      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^(#{1,6}\s|```|\s*>|\s*([-*+]|\d+[.)])\s)/.test(lines[i])) para.push(lines[i++].trim());
+      add(out, mdInline(h("p", {}), para.join(" ")));
+    }
+    return out;
+  }
+  function csvRows(text, sep) {
+    var rows = [], row = [], cell = "", q = false, i, c;
+    for (i = 0; i < text.length; i++) {
+      c = text[i];
+      if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
+      else if (c === '"') q = true;
+      else if (c === sep) { row.push(cell); cell = ""; }
+      else if (c === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; }
+      else if (c !== "\r") cell += c;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+
+  // ---- files page ----------------------------------------------------------------------------
+  function crumbs(rel, isFile) {
+    var parts = rel ? rel.split("/") : [], st = S.state, nav = h("nav", { class: "crumbs", "aria-label": "Folder path" });
+    add(nav, h("a", { href: "#files" }, st.config.project_name || "Project folder"));
+    parts.forEach(function (part, i) {
+      add(nav, h("span", { "aria-hidden": "true" }, " / "));
+      var to = parts.slice(0, i + 1).join("/");
+      add(nav, i === parts.length - 1 ? h("b", {}, part) : h("a", { href: "#files/" + encodeURIComponent(to) }, part));
+    });
+    return nav;
+  }
+  function fileProblem(r, rel) {
+    if (r.not_connected) return h("div", { class: "notice flame" }, h("div", {}, h("strong", {}, "Not connected to Torch"), h("p", {}, "Sign in to look at files.")), h("button", { onclick: openSignin }, "Sign in to Torch"));
+    return h("div", { class: "notice flame" }, h("div", {}, h("strong", {}, r.no_project ? "No project folder yet" : "That could not be opened"), h("p", {}, r.error)),
+      rel ? h("a", { class: "button quiet", href: "#files" }, "Back to the project folder") : null);
+  }
+  function drawFiles() {
+    var rel = S.arg, gen = ++S.fileGen;
+    stop("follow");
+    show(h("h1", { class: "page-title" }, "Files"), crumbs(rel), h("p", { class: "loading" }, "Asking Torch for this folder"));
+    api("GET", "/api/files/list?path=" + encodeURIComponent(rel)).then(function (r) {
+      if (gen !== S.fileGen || S.view !== "files") return;
+      if (!r.ok) { show(h("h1", { class: "page-title" }, "Files"), crumbs(rel), fileProblem(r, rel)); return; }
+      var rows = r.entries.map(function (e) {
+        var to = (rel ? rel + "/" : "") + e.name, folder = e.kind === "folder" || (e.kind === "link" && e.link_to === "folder");
+        return h("tr", {}, h("td", {}, h("a", { class: folder ? "dir" : "", href: (folder ? "#files/" : "#file/") + encodeURIComponent(to) }, e.name + (folder ? "/" : "")),
+            e.kind === "link" ? h("span", { class: "hint" }, e.link_to === "missing" ? "  broken link" : "  link") : null),
+          h("td", { class: "num" }, e.size != null ? bytes(e.size) : ""), h("td", {}, e.modified));
+      });
+      show(h("h1", { class: "page-title" }, "Files"),
+        h("p", { class: "page-lede" }, "The project folder on Torch (" + r.root + "). You can look and download here; nothing in this window can change, move or delete a file."),
+        crumbs(rel),
+        r.entries.length ? h("table", { class: "grid files" }, h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Name"), h("th", { scope: "col", class: "num" }, "Size"), h("th", { scope: "col" }, "Changed"))), h("tbody", {}, rows))
+                         : h("p", { class: "empty" }, "This folder is empty."),
+        r.truncated ? h("p", { class: "hint" }, "Only the first 5,000 entries are shown.") : null);
+    }, function (e) { if (gen === S.fileGen) show(h("h1", { class: "page-title" }, "Files"), crumbs(rel), fileProblem({ error: e.message }, rel)); });
+  }
+
+  function download(rel, button) {
+    var was = button.textContent; button.disabled = true; button.textContent = "Downloading";
+    fetch("/api/files/download?path=" + encodeURIComponent(rel), { headers: { "X-Torchbench-Token": TOKEN } }).then(function (r) {
+      if (!r.ok) return r.json().then(function (j) { throw new Error(j.error || "The download failed."); });
+      return r.blob();
+    }).then(function (blob) {
+      var a = h("a", { href: URL.createObjectURL(blob), download: rel.split("/").pop() });
+      document.body.appendChild(a); a.click(); a.remove();
+      button.textContent = "Downloaded"; setTimeout(function () { button.textContent = was; button.disabled = false; }, 1500);
+    }).catch(function (e) { button.textContent = e.message; setTimeout(function () { button.textContent = was; button.disabled = false; }, 4000); });
+  }
+
+  function drawFile() {
+    var rel = S.arg, gen = ++S.fileGen, name = rel.split("/").pop(), parent = rel.split("/").slice(0, -1).join("/");
+    var isLog = /\.(out|err|log)$/i.test(name), isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(name);
+    stop("follow");
+    var head = [h("h1", { class: "page-title" }, name), crumbs(rel, true)];
+    show.apply(null, head.concat([h("p", { class: "loading" }, "Asking Torch for this file")]));
+    var dl = h("button", { class: "quiet small", onclick: function (e) { download(rel, e.target); } }, "Download");
+
+    if (isImage) {
+      fetch("/api/files/download?path=" + encodeURIComponent(rel), { headers: { "X-Torchbench-Token": TOKEN } }).then(function (r) {
+        if (!r.ok) return r.json().then(function (j) { throw new Error(j.error || "The picture could not be loaded."); });
+        return r.blob();
+      }).then(function (blob) {
+        if (gen !== S.fileGen) return;
+        show.apply(null, head.concat([h("div", { class: "toolbar" }, h("span", { class: "hint" }, bytes(blob.size)), dl), h("img", { class: "picture", alt: name, src: URL.createObjectURL(blob) })]));
+      }).catch(function (e) { if (gen === S.fileGen) show.apply(null, head.concat([fileProblem({ error: e.message }, rel)])); });
+      return;
+    }
+
+    function load(fromEnd) {
+      api("GET", "/api/files/read?path=" + encodeURIComponent(rel) + "&start=" + (fromEnd ? -1 : 0)).then(function (r) {
+        if (gen !== S.fileGen || S.view !== "file") return;
+        if (!r.ok) { show.apply(null, head.concat([fileProblem(r, rel)])); return; }
+        paint(r, fromEnd);
+      }, function (e) { if (gen === S.fileGen) show.apply(null, head.concat([fileProblem({ error: e.message }, rel)])); });
+    }
+
+    function paint(r, fromEnd) {
+      var bar = h("div", { class: "toolbar" }, h("span", { class: "hint" }, bytes(r.size)), dl), body, note = null;
+      if (r.binary) {
+        body = h("p", { class: "empty" }, "This is not a text file, so it is not shown here. Download it to open it on your Mac.");
+      } else if (r.show_as === "markdown" || r.show_as === "json" || r.show_as === "csv") {
+        var pretty = true, holder = h("div", {});
+        var draw = function () {
+          var el;
+          if (!pretty) el = h("pre", { class: "raw light" }, r.text);
+          else if (r.show_as === "markdown") el = mdRender(r.text);
+          else if (r.show_as === "json") { try { el = h("pre", { class: "raw light" }, JSON.stringify(JSON.parse(r.text), null, 2)); } catch (x) { el = h("pre", { class: "raw light" }, r.text); } }
+          else {
+            var rows = csvRows(r.text, /\.tsv$/i.test(name) ? "\t" : ","), shown = rows.slice(1, 1001);
+            el = h("div", { class: "table-wrap" }, h("table", { class: "grid" }, h("thead", {}, h("tr", {}, (rows[0] || []).map(function (c) { return h("th", { scope: "col" }, c); }))),
+              h("tbody", {}, shown.map(function (row) { return h("tr", {}, row.map(function (c) { return h("td", { class: /^-?[\d.,]+%?$/.test(c) ? "num" : "" }, c); })); }))));
+            if (rows.length > 1001) el = h("div", {}, el, h("p", { class: "hint" }, "The first 1,000 rows are shown. Download the file for all " + (rows.length - 1) + "."));
+          }
+          holder.replaceChildren(el);
+        };
+        add(bar, h("button", { class: "quiet small", onclick: function (e) { pretty = !pretty; e.target.textContent = pretty ? "Show the plain text" : "Show it formatted"; draw(); } }, "Show the plain text"));
+        draw(); body = holder;
+        if (r.more_after) note = h("p", { class: "hint" }, "Only the first " + bytes(r.end) + " of " + bytes(r.size) + " is shown. Download the file for the rest.");
+      } else {
+        var pre = h("pre", { class: "raw log", tabindex: "0" }), flagged = {}, lineNo = 0;
+        r.problems.forEach(function (p) { flagged[p.line] = p; });
+        var append = function (text, problems, offset) {
+          var map = {}; (problems || []).forEach(function (p) { map[p.line] = p; });
+          var lines = text.split("\n"); if (lines[lines.length - 1] === "") lines.pop();
+          lines.forEach(function (ln, k) { var p = map[k + 1]; pre.appendChild(h("span", { class: p ? "ln bad" : "ln", title: p ? p.title + ". " + p.explanation : null }, ln + "\n")); });
+        };
+        append(r.text, r.problems);
+        var end = r.end, seen = {}, uniq = r.problems.filter(function (p) { if (seen[p.title]) return false; seen[p.title] = true; return true; });
+        var summary = h("div", {});
+        var paintProblems = function (list) {
+          summary.replaceChildren(list.length ? h("div", { class: "notice stop" }, h("div", {}, h("strong", {}, "This log shows a problem"),
+            h("ul", { class: "problems" }, list.map(function (p) { return h("li", {}, h("b", {}, p.title + ". "), p.explanation); })))) : "");
+        };
+        paintProblems(uniq);
+        var follow = h("input", { type: "checkbox", id: "tb-follow" });
+        var tick = function () {
+          if (gen !== S.fileGen || S.view !== "file" || !follow.checked) return;
+          if (document.hidden) { later("follow", 3000, tick); return; }
+          api("GET", "/api/files/read?path=" + encodeURIComponent(rel) + "&start=" + end + "&follow=1").then(function (n) {
+            if (gen !== S.fileGen || !n.ok) { if (n && !n.ok) follow.checked = false; return; }
+            if (n.start !== end) { load(true); return; }          // the file was replaced: start again from its end
+            if (n.text) {
+              var stick = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+              append(n.text, n.problems);
+              n.problems.forEach(function (p) { if (!seen[p.title]) { seen[p.title] = true; uniq.push(p); } });
+              paintProblems(uniq);
+              if (stick) pre.scrollTop = pre.scrollHeight;
+            }
+            end = n.end; later("follow", 3000, tick);
+          }, function () { later("follow", 6000, tick); });
+        };
+        follow.addEventListener("change", function () { if (follow.checked) { pre.scrollTop = pre.scrollHeight; tick(); } else stop("follow"); });
+        add(bar, [h("label", { for: "tb-follow" }, follow, "Follow new lines"),
+          h("button", { class: "quiet small", onclick: function () { stop("follow"); load(!fromEnd); } }, fromEnd ? "Show from the top" : "Show the end")]);
+        body = h("div", {}, summary, pre);
+        if (fromEnd && r.more_before) note = h("p", { class: "hint" }, "Showing the last " + bytes(r.end - r.start) + " of " + bytes(r.size) + ".");
+        if (!fromEnd && r.more_after) note = h("p", { class: "hint" }, "Showing the first " + bytes(r.end) + " of " + bytes(r.size) + ".");
+        setTimeout(function () { if (fromEnd) pre.scrollTop = pre.scrollHeight; }, 0);
+      }
+      show.apply(null, head.concat([bar, note, body].filter(Boolean)));
+    }
+    load(isLog);
+  }
+
+  // ---- terminal page -------------------------------------------------------------------------
+  function drawTerminal() {
+    var gen = ++S.termGen, box = h("div", { class: "term-box" }), status = h("p", { class: "hint", role: "status" });
+    var closeBtn = h("button", { class: "quiet small", onclick: function () { api("POST", "/api/term/close").catch(function () {}); } }, "End this shell");
+    show(h("h1", { class: "page-title" }, "Terminal"),
+      h("div", { class: "notice flame slim" }, h("div", {}, h("p", {}, h("b", {}, "This shell runs on Torch's login node, as you. "),
+        "Use it for quick things: looking at files, checking jobs. Anything heavy belongs in a job, and NYU stops heavy work here. What appears on screen is recorded on your Mac and listed on the Commands page; Torch Bench never types here itself."))),
+      h("div", { class: "toolbar" }, status, closeBtn), box);
+    if (typeof Terminal === "undefined") { status.textContent = "The terminal part of Torch Bench did not load. Reload the page."; return; }
+    var term = new Terminal({ fontFamily: '"SF Mono", Menlo, Consolas, "Liberation Mono", monospace', fontSize: 13, cursorBlink: true, scrollback: 8000,
+      theme: { background: "#1F1433", foreground: "#EDE7F6", cursor: "#F6A53B", selectionBackground: "#6B4A8E" } });
+    var fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(box);
+    try { fit.fit(); } catch (x) {}
+    S.term = term;
+    var alive = function () { return gen === S.termGen && S.view === "terminal"; };
+    var pending = "", sending = false;
+    function flush() {
+      if (sending || !pending) return;
+      var data = pending; pending = ""; sending = true;
+      api("POST", "/api/term/write", { data: data }).then(function () { sending = false; flush(); }, function () { sending = false; });
+    }
+    term.onData(function (d) { pending += d; flush(); });
+    var resizeTimer = null;
+    term.onResize(function (sz) { clearTimeout(resizeTimer); resizeTimer = setTimeout(function () { api("POST", "/api/term/resize", { rows: sz.rows, cols: sz.cols }).catch(function () {}); }, 150); });
+    var onWin = function () { if (alive()) { try { fit.fit(); } catch (x) {} } else window.removeEventListener("resize", onWin); };
+    window.addEventListener("resize", onWin);
+
+    function read(since) {
+      if (!alive()) return;
+      api("GET", "/api/term/read?since=" + since).then(function (r) {
+        if (!alive()) return;
+        if (r.data) { var bin = atob(r.data), arr = new Uint8Array(bin.length), i; for (i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i); term.write(arr); }
+        if (r.closed) { ended(); return; }
+        read(r.next);
+      }, function () { if (alive()) setTimeout(function () { read(since); }, 2000); });
+    }
+    function ended() {
+      closeBtn.hidden = true;
+      status.replaceChildren("The shell has ended. ", h("button", { class: "link", onclick: function () { drawTerminal(); } }, "Open a new one"));
+    }
+    function begin() {
+      status.textContent = "Opening a shell on Torch";
+      api("POST", "/api/term/start", { rows: term.rows, cols: term.cols }).then(function (r) {
+        if (!alive()) return;
+        status.textContent = r.reattached ? "Back in the shell you left open." : "Connected. Type exit to end the shell.";
+        if (r.reattached) api("POST", "/api/term/resize", { rows: term.rows, cols: term.cols }).catch(function () {});
+        term.focus(); read(0);
+      }, function (e) {
+        if (!alive()) return;
+        closeBtn.hidden = true;
+        status.replaceChildren(e.message + " ", h("button", { class: "link", onclick: function () { openSignin(); } }, "Sign in"), " then ", h("button", { class: "link", onclick: function () { drawTerminal(); } }, "try again"), ".");
+      });
+    }
+    begin();
+  }
+
   // ---- routing -------------------------------------------------------------------------------
   function route() {
     var st = S.state;
     if (!st.configured) { S.view = "setup"; drawSetup(); return; }
     if (!st.ssh_ready && S.view !== "setup") { S.view = "setup"; S.wizard = 2; drawSetup(); return; }
     if (S.view === "setup") { drawSetup(); return; }
-    var want = (location.hash || "#jobs").slice(1);
-    S.view = ["jobs", "commands", "help"].indexOf(want) >= 0 ? want : "jobs";
-    stop("dash"); stop("cmds");
+    var hash = (location.hash || "#jobs").slice(1), cut = hash.indexOf("/");
+    var want = cut < 0 ? hash : hash.slice(0, cut);
+    try { S.arg = cut < 0 ? "" : decodeURIComponent(hash.slice(cut + 1)); } catch (x) { S.arg = ""; }
+    S.view = ["jobs", "files", "file", "terminal", "commands", "help"].indexOf(want) >= 0 ? want : "jobs";
+    stop("dash"); stop("cmds"); stop("follow"); S.fileGen++; S.termGen++;
+    if (S.term && S.view !== "terminal") { try { S.term.dispose(); } catch (x) {} S.term = null; }
+    if (S.view === "files") { drawTop(); drawFiles(); return; }
+    if (S.view === "file") { drawTop(); drawFile(); return; }
+    if (S.view === "terminal") { drawTop(); drawTerminal(); return; }
     if (S.view === "jobs") { S.dashSig = ""; if (S.dash) drawJobs(true); else show(h("p", { class: "loading" }, "Asking Torch about your jobs")); drawTop(); loadDash(); }
     else if (S.view === "commands") { show(h("p", { class: "loading" }, "Loading")); loadCmds(true); }
     else drawHelp();

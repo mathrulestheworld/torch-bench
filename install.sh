@@ -107,7 +107,7 @@ LAUNCH
   <key>CFBundleIdentifier</key><string>local.torchbench.launcher</string>
   <key>CFBundleExecutable</key><string>TorchBench</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>0.2.0</string>
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST

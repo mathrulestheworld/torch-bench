@@ -1,0 +1,7 @@
+run,step,train_loss,val_loss,note
+run_a,200,1.92,1.88,
+run_a,1000,0.71,0.80,"warm-up done, lr 1e-4"
+run_a,1800,0.39,0.412,best
+run_b,200,1.95,1.90,
+run_b,1000,0.78,0.86,
+run_b,2000,0.41,0.447,

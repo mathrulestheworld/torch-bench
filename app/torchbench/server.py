@@ -7,8 +7,10 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -19,14 +21,24 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__, commands, config, paths, sshconf
 from .cmdlog import CommandLog
 from .dashboard import Dashboard
+from .files import Files
 from .login import LoginSession
 from .redact import Redactor
 from .ssh import SSH
+from .terminal import TerminalSession
 
 DEFAULT_PORT = 8642
 MAX_BODY = 256 * 1024
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-                ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
+                ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8"}
+STATIC_NAME_RE = re.compile(r"^(vendor/)?[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class Raw:
+    """A non-JSON answer (a downloaded file)."""
+
+    def __init__(self, body: bytes, content_type: str, filename: str) -> None:
+        self.body, self.content_type, self.filename = body, content_type, filename
 
 TORCH_IN_TWO_SENTENCES = (
     "Torch is NYU's shared supercomputer: a large pool of GPU and CPU machines that researchers use by "
@@ -55,6 +67,8 @@ class App:
         self.ssh: Optional[SSH] = None
         self.dashboard: Optional[Dashboard] = None
         self.login: Optional[LoginSession] = None
+        self.files: Optional[Files] = None
+        self.term: Optional[TerminalSession] = None
         self._lock = threading.Lock()
         self.stop_server = lambda: None
         self.load()
@@ -64,8 +78,9 @@ class App:
         if self.cfg:
             self.ssh = SSH(self.cfg["ssh_alias"], self.log)
             self.dashboard = Dashboard(self.cfg, self.ssh)
+            self.files = Files(self.cfg, self.ssh)
         else:
-            self.ssh = self.dashboard = None
+            self.ssh = self.dashboard = self.files = None
 
     def need_config(self) -> None:
         if not self.cfg or self.ssh is None or self.dashboard is None:
@@ -95,6 +110,8 @@ class App:
             if key in body:
                 raw[key] = body[key]
         netid = str(raw.get("netid", "")).strip().lower()
+        if self.demo and not str(raw.get("project_name", "")).strip():   # the demo comes with a made-up project
+            raw["project_name"], raw["sbatch_account"] = "demo-project", raw.get("sbatch_account") or "torch_pr_000_general"
         template = body.get("remote_dir_template")
         if isinstance(template, str) and "{netid}" in template and not str(raw.get("remote_dir", "")).strip():
             raw["remote_dir"] = template.replace("{netid}", netid)
@@ -127,6 +144,30 @@ class App:
             self.dashboard.forget_connection()
         return session.state()
 
+    # -- terminal -----------------------------------------------------------------------------
+    def start_terminal(self, rows: int, cols: int) -> Dict[str, Any]:
+        self.need_config()
+        assert self.ssh is not None
+        with self._lock:
+            if self.term and not self.term.closed:
+                return {"ok": True, "reattached": True, "since": 0}
+            command = commands.terminal(self.cfg.get("remote_dir", ""))
+            argv = self.ssh.terminal_argv(command)
+            if argv is None:
+                raise ApiError("Sign in to Torch first: the terminal uses the shared sign-in.", 409)
+            shown = "ssh -tt %s%s  (built-in terminal)" % (self.cfg["ssh_alias"], (" '%s'" % command.text) if command.text else "")
+            self.term = TerminalSession(argv, self.log, self.redactor, shown)
+            try:
+                self.term.start(rows, cols)
+            except OSError as exc:
+                self.term = None
+                raise ApiError("The terminal could not start on this Mac (%s)." % exc)
+            return {"ok": True, "reattached": False, "since": 0}
+
+    def close_terminal(self) -> None:
+        if self.term:
+            self.term.close()
+
     def login_state(self) -> Dict[str, Any]:
         if not self.login:
             return {"step": "idle", "message": "", "raw": ""}
@@ -157,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy",
-                         "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                         "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
                          "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
@@ -204,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
             name = url.path[len("/static/"):]
             target = paths.static_dir() / name
             ext = os.path.splitext(name)[1]
-            if "/" in name or ".." in name or ext not in STATIC_TYPES or not target.is_file():
+            if not STATIC_NAME_RE.match(name) or ".." in name or ext not in STATIC_TYPES or not target.is_file():
                 self._send(404, b"Not found", "text/plain")
                 return
             self._send(200, target.read_bytes(), STATIC_TYPES[ext])
@@ -228,7 +269,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._body() if method == "POST" else {}
             status, result = self._route(method, path, query, body)
-            self._json(result, status)
+            if isinstance(result, Raw):
+                safe = re.sub(r"[^A-Za-z0-9._-]", "_", result.filename) or "download"
+                self._send(status, result.body, result.content_type,
+                           {"Content-Disposition": "attachment; filename=\"%s\"" % safe})
+            else:
+                self._json(result, status)
         except ApiError as exc:
             self._json({"error": exc.message}, exc.status)
         except commands.CommandRefused as exc:
@@ -298,9 +344,69 @@ class Handler(BaseHTTPRequestHandler):
             app.need_config()
             assert app.dashboard is not None
             return 200, app.dashboard.measure_disk()
+        # files and logs: read-only, inside the project folder
+        if route == ("GET", "/api/files/list"):
+            app.need_config()
+            assert app.files is not None
+            return 200, app.files.list(q("path"))
+        if route == ("GET", "/api/files/read"):
+            app.need_config()
+            assert app.files is not None
+            try:
+                start = int(q("start", "0"))
+            except ValueError:
+                raise ApiError("Not a valid position in the file.")
+            return 200, app.files.read(q("path"), start, following=q("follow") == "1")
+        if route == ("GET", "/api/files/download"):
+            app.need_config()
+            assert app.files is not None
+            got = app.files.download(q("path"))
+            if not got["ok"]:
+                return (409 if got.get("not_connected") else 400), got
+            return 200, Raw(got["data"], got["content_type"], got["name"])
+        if route == ("GET", "/api/job/logs"):
+            app.need_config()
+            assert app.files is not None
+            return 200, app.files.job_logs(q("id"))
+
+        # the built-in terminal
+        if route == ("POST", "/api/term/start"):
+            try:
+                rows, cols = int(body.get("rows", 30)), int(body.get("cols", 110))
+            except (TypeError, ValueError):
+                rows, cols = 30, 110
+            return 200, app.start_terminal(rows, cols)
+        if path.startswith("/api/term/"):
+            term = app.term
+            if term is None:
+                raise ApiError("No terminal is open.", 409)
+            if route == ("GET", "/api/term/read"):
+                try:
+                    since = max(0, int(q("since", "0")))
+                except ValueError:
+                    since = 0
+                got = term.read(since)
+                got["data"] = base64.b64encode(got["data"]).decode("ascii")
+                return 200, got
+            if route == ("POST", "/api/term/write"):
+                data = body.get("data", "")
+                if not isinstance(data, str) or not term.write(data):
+                    raise ApiError("The terminal is closed.", 409)
+                return 200, {"ok": True}
+            if route == ("POST", "/api/term/resize"):
+                try:
+                    ok = term.resize(int(body.get("rows", 0)), int(body.get("cols", 0)))
+                except (TypeError, ValueError):
+                    ok = False
+                return 200, {"ok": ok}
+            if route == ("POST", "/api/term/close"):
+                term.close()
+                return 200, {"ok": True}
+
         if route == ("POST", "/api/disconnect"):
             app.need_config()
             assert app.ssh is not None and app.dashboard is not None
+            app.close_terminal()
             app.ssh.close_login()
             app.dashboard.forget_connection()
             return 200, {"connected": app.ssh.check()}
@@ -316,6 +422,7 @@ class Handler(BaseHTTPRequestHandler):
             app.need_config()
             return 200, config.shareable(app.cfg)
         if route == ("POST", "/api/quit"):
+            app.close_terminal()
             threading.Thread(target=app.stop_server, daemon=True).start()
             return 200, {"stopping": True}
         raise ApiError("Unknown request.", 404)

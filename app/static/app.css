@@ -223,6 +223,43 @@ pre.block { font: 13px/1.5 var(--mono); background: var(--surface); border: 1px 
 .cmd details { margin-top: 6px; }
 .cmd summary { cursor: pointer; font-size: 14px; color: var(--violet); }
 
+/* ---- files, logs, terminal ---- */
+.crumbs { margin: 4px 0 18px; font-size: 16px; overflow-wrap: anywhere; }
+.crumbs span { color: var(--ink-soft); }
+table.grid { border-collapse: collapse; width: 100%; font-size: 15px; }
+table.grid th { text-align: left; font-weight: 600; color: var(--ink-soft); font-size: 14px; padding: 8px 16px 8px 0; border-bottom: 1px solid var(--line); }
+table.grid td { padding: 8px 16px 8px 0; border-bottom: 1px solid #E9E4F1; vertical-align: top; overflow-wrap: anywhere; }
+table.grid .num { text-align: right; white-space: nowrap; }
+table.files td:first-child a { font-weight: 500; text-decoration: none; }
+table.files td:first-child a:hover { text-decoration: underline; }
+table.files a.dir { font-weight: 600; }
+table.files td:nth-child(2), table.files td:nth-child(3) { color: var(--ink-soft); white-space: nowrap; width: 1%; }
+.table-wrap { overflow-x: auto; }
+.picture { max-width: 100%; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); }
+pre.raw.light { background: var(--surface); color: var(--ink); border: 1px solid var(--line); max-height: none; }
+pre.raw.log { max-height: 68vh; }
+pre.raw .ln { display: block; }
+pre.raw .ln.bad { background: rgba(255, 120, 100, 0.28); }
+.problems { margin: 6px 0 0; padding-left: 20px; }
+.problems b { font-weight: 600; }
+.loglist { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+.loglist li { padding: 3px 0; }
+.md { max-width: 78ch; }
+.md h2 { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; margin: 8px 0 12px; }
+.md h3 { font-size: 20px; font-weight: 600; margin: 28px 0 8px; }
+.md h4, .md h5, .md h6 { font-size: 16px; font-weight: 600; margin: 20px 0 6px; }
+.md p, .md ul, .md ol, .md blockquote, .md .table-wrap, .md pre { margin: 0 0 14px; }
+.md ul, .md ol { padding-left: 24px; }
+.md li { margin-bottom: 4px; }
+.md code { font: 0.9em var(--mono); background: #ECE7F4; padding: 1px 5px; border-radius: 4px; }
+.md blockquote { border-left: 3px solid var(--line); padding-left: 14px; color: var(--ink-soft); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
+.md table.grid { width: auto; }
+.notice.slim { padding: 12px 16px; margin-bottom: 14px; }
+.notice.slim p { max-width: none; font-size: 15px; }
+.term-box { background: #1F1433; border-radius: 8px; padding: 10px 6px 10px 12px; height: calc(100vh - 330px); min-height: 320px; overflow: hidden; }
+.term-box .xterm { height: 100%; }
+
 /* ---- help page ---- */
 .help { max-width: 760px; }
 .help h2 { font-size: 20px; font-weight: 600; margin: 36px 0 6px; }

@@ -10,20 +10,62 @@ from torchbench.ssh import SSH
 
 
 class Registry(unittest.TestCase):
+    ROOT = "/scratch/abc1234/demo-project"
+
     def test_everything_registered_is_read_only(self):
-        built = [commands.probe(), commands.queue(), commands.history("2026-11-04"), commands.fairshare("abc1234"),
-                 commands.priority("abc1234"), commands.partitions(["l40s_public", "cs"]), commands.quota(),
-                 commands.job_detail("22601412_3"), commands.disk_usage("/scratch/abc1234/demo-project")]
+        simple = [commands.probe(), commands.queue(), commands.history("2026-11-04"), commands.fairshare("abc1234"),
+                  commands.priority("abc1234"), commands.partitions(["l40s_public", "cs"]), commands.quota(),
+                  commands.job_detail("22601412_3"), commands.disk_usage(self.ROOT)]
+        scripted = [commands.list_dir(self.ROOT, "results"), commands.read_file(self.ROOT, "logs/a.out", -1),
+                    commands.download_file(self.ROOT, "results/x.png"), commands.job_logs(self.ROOT, "22601412_3")]
+        built = simple + scripted + [commands.terminal(self.ROOT)]
         self.assertEqual(sorted(c.name for c in built), sorted(commands.all_names()))
         for c in built:
             self.assertTrue(c.from_registry())
             self.assertFalse(c.mutating, c.name)
+        for c in simple:
             first = c.text.split()[0]
             self.assertIn(first, ("hostname", "squeue", "sacct", "sshare", "sprio", "sinfo", "myquota", "scontrol", "du"))
             for word in ("sbatch", "scancel", "rm ", "srun", "python", "apptainer", ">", "|", ";", "&&", "$("):
                 if word == "|" and first in ("squeue", "sprio"):
                     continue          # the '|' there is inside a quoted format string
                 self.assertNotIn(word, c.text, c.name)
+
+    def test_file_scripts_only_read(self):
+        import re, shlex
+        scripts = (commands.LIST_SCRIPT, commands.READ_SCRIPT, commands.DOWNLOAD_SCRIPT, commands.JOB_LOGS_SCRIPT)
+        for script in scripts:
+            # every program a script may call, and nothing that writes, moves, deletes or computes
+            words = set(re.findall(r"(?:^|[;|&({]|\$\()\s*([a-z][a-z0-9_-]*)(?=\s)", script))
+            self.assertLessEqual(words, {"realpath", "echo", "exit", "case", "find", "head", "stat", "tail", "cat", "if", "then", "fi", "esac",
+                                         "s", "o"}, words)      # s and o are the script's own size/offset variables
+            for banned in ("rm ", "mv ", "cp ", "chmod", "tee", "sbatch", "scancel", "srun", "python", "curl", "wget", "-delete", "-exec"):
+                self.assertNotIn(banned, script)
+            self.assertIsNone(re.search(r">(?!&2)(?!/dev/null)", script.replace("s > $4", "")), "a script must not redirect into a file")
+        for script in scripts[:3]:
+            self.assertTrue(script.startswith(commands.GUARD))          # the project-folder guard comes first
+        c = commands.read_file(self.ROOT, "logs/it's a b.out", 120, following=True)
+        parts = shlex.split(c.text)
+        self.assertEqual(parts[:2], ["bash", "-c"])
+        self.assertEqual(parts[2], commands.READ_SCRIPT)                # the script is fixed text ...
+        self.assertEqual(parts[4:], [self.ROOT, self.ROOT + "/logs/it's a b.out", "120", str(commands.TAIL_BYTES), str(commands.FOLLOW_BYTES)])
+        self.assertTrue(c.quiet_output and c.binary)                    # ... and file contents stay out of the log
+
+    def test_paths_cannot_leave_the_project(self):
+        for bad in ("../secret", "results/../../x", "/etc/passwd", "results/./x", "a\nb", "a\x00b", "x" * 2000, 7, None):
+            for build in (commands.list_dir, commands.read_file, commands.download_file):
+                with self.assertRaises(commands.CommandRefused, msg=repr(bad)):
+                    build(self.ROOT, bad)
+        with self.assertRaises(commands.CommandRefused):
+            commands.list_dir("/scratch/x; id", "")
+        with self.assertRaises(commands.CommandRefused):
+            commands.read_file(self.ROOT, "a.txt", start="0; id")
+        with self.assertRaises(commands.CommandRefused):
+            commands.job_logs(self.ROOT, "1 -o -name x")
+        with self.assertRaises(commands.CommandRefused):
+            commands.terminal("/scratch/x; rm -rf ~")
+        self.assertEqual(commands.terminal(self.ROOT).text, "cd /scratch/abc1234/demo-project ; exec $SHELL -l")
+        self.assertEqual(commands.terminal("").text, "")
 
     def test_exact_command_text(self):
         self.assertEqual(commands.queue().text, "squeue --me -h -o '%i|%T|%M|%l|%P|%r|%S|%V|%D|%b|%N|%Q|%j'")
@@ -86,6 +128,18 @@ class Wrapper(FakeTorchCase):
             self.ssh.run(forged)                                          # not built by the registry
         self.assertEqual(self.remote_commands(), [])
 
+    def test_terminal_line_cannot_be_run_as_a_command(self):
+        self.open_login()
+        with self.assertRaises(PermissionError):
+            self.ssh.run(commands.terminal("/scratch/abc1234/demo-project"))
+        with self.assertRaises(PermissionError):
+            self.ssh.terminal_argv(commands.queue())
+        argv = self.ssh.terminal_argv(commands.terminal("/scratch/abc1234/demo-project"))
+        self.assertEqual(argv[-8:], ["-tt", "-o", "BatchMode=yes", "-o", "ControlMaster=no", "-o", "ConnectTimeout=10", "torch",
+                                     "cd /scratch/abc1234/demo-project ; exec $SHELL -l"][-8:])
+        self.close_login()
+        self.assertIsNone(self.ssh.terminal_argv(commands.terminal("")))     # no shared login, no terminal
+
     def test_mutating_commands_are_refused(self):
         self.open_login()
         import dataclasses
@@ -127,6 +181,13 @@ class Redaction(unittest.TestCase):
         self.assertNotIn("correct horse", text)
         self.assertNotIn("BUUM5YHJX", text)
         self.assertIn("https://microsoft.com/devicelogin", text)
+
+    def test_tokens_typed_in_the_terminal_are_blanked(self):
+        r = Redactor()
+        text = r.clean("$ export HF_TOKEN=hf_abcdefghijklmnopqrstuvwxyz012345\n$ curl -H 'x: sk-abcdefghijklmnopqrstuvwx'\n$ mytool --api-key=s3cr3tvalue --steps=20")
+        for secret in ("hf_abcdefghijklmnop", "sk-abcdefghijkl", "s3cr3tvalue"):
+            self.assertNotIn(secret, text)
+        self.assertIn("--steps=20", text)
 
     def test_ordinary_output_survives(self):
         r = Redactor()
@@ -179,6 +240,7 @@ class Policy(unittest.TestCase):
     def test_this_version_only_views(self):
         for mode in ("owner", "colleague"):
             self.assertTrue(policy.allowed(mode, "view"))
+            self.assertTrue(policy.allowed(mode, "terminal"))
             for action in ("push", "pull", "submit", "cancel", "cleanup"):
                 self.assertFalse(policy.allowed(mode, action), action)
 

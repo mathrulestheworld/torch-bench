@@ -5,7 +5,11 @@ It imitates just what Torch Bench relies on:
   ssh -G <alias>                      print the effective settings from $TORCHBENCH_SSH_CONFIG
   ssh -O check|exit <alias>           is a "shared login" open? ($FAKE_SSH_STATE/master exists)
   ssh -o BatchMode=yes ... <alias> <command>
-                                      answer from $FAKE_SSH_FIXTURES/<first word>.txt, only if a login is open
+                                      answer from $FAKE_SSH_FIXTURES/<first word>.txt, only if a login is open.
+                                      The guarded file commands (`bash -c <script> torchbench <root> <path> ...`) are
+                                      really run, against the made-up project in $FAKE_SSH_PROJECT, when GNU find
+                                      is available (Linux); otherwise (macOS demo) they are imitated in Python.
+  ssh -tt ... <alias> [command]       the built-in terminal: a local shell in the made-up project folder
   ssh <alias> echo MARKER             an interactive sign-in, scripted by $FAKE_SSH_LOGIN:
         device (default) | polling | password | hostkey | odd | denied | unreachable
 
@@ -21,6 +25,8 @@ STATE = os.environ.get("FAKE_SSH_STATE", "/tmp/fake_ssh_state")
 FIXTURES = os.environ.get("FAKE_SSH_FIXTURES", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "demo"))
 MASTER = os.path.join(STATE, "master")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+WANT_TTY = False
+PROJECT = os.environ.get("FAKE_SSH_PROJECT", os.path.join(FIXTURES, "project"))
 
 
 def now():
@@ -60,6 +66,7 @@ def effective_config(alias):
 
 def parse(argv):
     opts, control, show, rest = {}, None, False, []
+    global WANT_TTY
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -72,6 +79,9 @@ def parse(argv):
             i += 2
         elif a == "-G":
             show = True
+            i += 1
+        elif a in ("-tt", "-t"):
+            WANT_TTY = True
             i += 1
         else:
             rest = argv[i:]
@@ -143,6 +153,109 @@ def login(alias, command):
     return 0
 
 
+def gnu_tools():
+    if os.environ.get("FAKE_SSH_EMULATE") == "1":
+        return False
+    import subprocess
+    try:
+        out = subprocess.run(["find", "--version"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
+        return out.returncode == 0 and b"GNU" in out.stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def map_path(path, root):
+    """The pretend cluster path -> the made-up project on this machine."""
+    if path == root or path.startswith(root + "/"):
+        return PROJECT + path[len(root):]
+    return path
+
+
+def emulate(script, args):
+    """What the guarded scripts print, without GNU tools (for the demo on macOS)."""
+    out = sys.stdout.buffer
+
+    def fail(code, message):
+        sys.stderr.write(message + "\n")
+        return code
+    if not os.path.exists(args[0]):
+        return fail(4, "The project folder was not found on Torch." if '"$r/logs"' in script else "No such file or folder.")
+    r = os.path.realpath(args[0])
+    if '"$r/logs"' in script:
+        logs = os.path.join(r, "logs")
+        if not os.path.isdir(logs):
+            return fail(5, "The project has no logs folder.")
+        for base, dirs, names in os.walk(logs):
+            depth = os.path.relpath(base, logs).count(os.sep) + (0 if base == logs else 1)
+            if depth >= 1:
+                dirs[:] = []
+            for name in names:
+                full = os.path.join(base, name)
+                if args[1] in name and os.path.isfile(full) and not os.path.islink(full):
+                    st = os.stat(full)
+                    out.write(("%d\t%.10f\t%s\n" % (st.st_size, st.st_mtime, os.path.relpath(full, logs))).encode())
+        return 0
+    if not os.path.exists(args[1]):
+        return fail(4, "No such file or folder.")
+    p = os.path.realpath(args[1])
+    if not (p == r or p.startswith(r + os.sep)):
+        return fail(3, "That is outside the project folder.")
+    if "-mindepth 1" in script:
+        if not os.path.isdir(p):
+            return fail(5, "That is not a folder.")
+        for name in sorted(os.listdir(p))[:5001]:
+            full = os.path.join(p, name)
+            st = os.lstat(full)
+            import stat as S
+            y = "l" if S.S_ISLNK(st.st_mode) else "d" if S.S_ISDIR(st.st_mode) else "f" if S.S_ISREG(st.st_mode) else "o"
+            target = y
+            if y == "l":
+                target = "d" if os.path.isdir(full) else "f" if os.path.isfile(full) else "N"
+            out.write(("%s\t%d\t%.10f\t%s\t%s\n" % (y, st.st_size, st.st_mtime, target, name)).encode())
+        return 0
+    if not os.path.isfile(p):
+        return fail(5, "That is not a file.")
+    size = os.path.getsize(p)
+    if "cat --" in script:
+        if size > int(args[2]):
+            return fail(6, "That file is too large to download through the window.")
+        out.write(open(p, "rb").read())
+        return 0
+    start, keep, cap = int(args[2]), int(args[3]), int(args[4])
+    if start < 0 or start > size:
+        start = max(size - keep, 0)
+    out.write(("%d %d\n" % (size, start)).encode())
+    with open(p, "rb") as f:
+        f.seek(start)
+        out.write(f.read(cap))
+    return 0
+
+
+def run_script(command_text):
+    import shlex
+    import subprocess
+    parts = shlex.split(command_text)          # bash -c <script> torchbench <root> [<path> ...]
+    if len(parts) < 5 or parts[:2] != ["bash", "-c"]:
+        sys.stderr.write("bash: bad invocation\n")
+        return 2
+    script, root, args = parts[2], parts[4], parts[4:]
+    args = [map_path(a, root) for a in args]
+    sys.stdout.flush()
+    if gnu_tools():
+        return subprocess.run(["bash", "-c", script, "torchbench"] + args).returncode
+    code = emulate(script, args)
+    sys.stdout.flush()
+    return code
+
+
+def shell(command):
+    """The built-in terminal in tests and the demo: a local shell in the made-up project folder."""
+    os.chdir(PROJECT if os.path.isdir(PROJECT) else "/")
+    say("Demo shell: this is a shell on this computer, in a made-up project folder. It is not Torch.")
+    env = dict(os.environ, PS1="[demo@log-1 demo-project]$ ", HISTFILE="/dev/null")
+    os.execvpe("bash", ["bash", "--noprofile", "--norc", "-i"], env)
+
+
 def run(command_text):
     word = command_text.split()[0] if command_text.split() else ""
     if os.environ.get("FAKE_SSH_SLEEP"):
@@ -153,6 +266,8 @@ def run(command_text):
     os.makedirs(STATE, exist_ok=True)
     with open(os.path.join(STATE, "commands.log"), "a") as f:
         f.write(command_text + "\n")
+    if word == "bash":
+        return run_script(command_text)
     path = os.path.join(FIXTURES, word + ".txt")
     if not re.match(r"^[a-z]+$", word) or not os.path.exists(path):
         sys.stderr.write("bash: %s: command not found\n" % word)
@@ -189,6 +304,8 @@ def main(argv):
         if not os.path.exists(MASTER):
             sys.stderr.write("%s: Permission denied (publickey,keyboard-interactive).\n" % alias)
             return 255
+        if WANT_TTY:
+            shell(command)
         return run(" ".join(command))
     return login(alias, command)
 

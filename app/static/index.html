@@ -6,6 +6,7 @@
 <meta name="torchbench-token" content="__TORCHBENCH_TOKEN__">
 <title>Torch Bench</title>
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -19,6 +20,8 @@
   </a>
   <nav class="tabs" id="tabs" aria-label="Pages" hidden>
     <a href="#jobs" data-view="jobs">Jobs</a>
+    <a href="#files" data-view="files">Files</a>
+    <a href="#terminal" data-view="terminal">Terminal</a>
     <a href="#commands" data-view="commands">Commands</a>
     <a href="#help" data-view="help">Help</a>
   </nav>
@@ -29,6 +32,8 @@
   <p class="loading">Opening Torch Bench</p>
 </main>
 <noscript><p class="loading">Torch Bench needs JavaScript switched on in this browser.</p></noscript>
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

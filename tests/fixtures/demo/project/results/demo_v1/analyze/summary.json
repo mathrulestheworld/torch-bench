@@ -1,0 +1,1 @@
+{"runs_total": 19, "runs_completed": 17, "runs_failed": 2, "best": {"run": "run_a", "step": 1800, "val_loss": 0.412}, "accuracy": {"run_a": 0.913, "run_b": 0.898, "run_c": 0.78}}
