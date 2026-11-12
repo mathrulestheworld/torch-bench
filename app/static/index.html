@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="torchbench-token" content="__TORCHBENCH_TOKEN__">
+<title>Torch Bench</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#jobs" aria-label="Torch Bench, jobs page">
+    <svg class="brand-mark" viewBox="0 0 24 32" aria-hidden="true">
+      <path class="flame" d="M12 1c1 5 7 7.500 7 14a7 7 0 0 1-14 0c0-3 1.500-4.500 2.500-6 .5 2 1.500 3 2.500 3C9 8 10.500 4 12 1z"/>
+      <rect class="handle" x="9.500" y="22" width="5" height="9" rx="1.200"/>
+    </svg>
+    <span class="brand-name">Torch Bench</span>
+  </a>
+  <nav class="tabs" id="tabs" aria-label="Pages" hidden>
+    <a href="#jobs" data-view="jobs">Jobs</a>
+    <a href="#commands" data-view="commands">Commands</a>
+    <a href="#help" data-view="help">Help</a>
+  </nav>
+  <div class="conn" id="conn" hidden></div>
+</header>
+<div class="demo-note" id="demo-note" hidden>Demo: this is made-up data. Nothing is being sent to Torch.</div>
+<main id="main" tabindex="-1">
+  <p class="loading">Opening Torch Bench</p>
+</main>
+<noscript><p class="loading">Torch Bench needs JavaScript switched on in this browser.</p></noscript>
+<script src="/static/app.js"></script>
+</body>
+</html>

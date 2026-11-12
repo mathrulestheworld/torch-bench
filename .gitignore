@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+# Real recordings hold job names and a NetID: review before committing, then remove this line if you want them tracked.
+tests/fixtures/real/

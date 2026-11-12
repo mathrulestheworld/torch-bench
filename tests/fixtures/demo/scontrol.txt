@@ -1,0 +1,22 @@
+JobId=22601977 JobName=probe-sweep-h200
+   UserId=abc1234(3412345) GroupId=abc1234(3412345) MCS_label=N/A
+   Priority=8421 Nice=0 Account=torch_pr_000_general QOS=gpu48
+   JobState=PENDING Reason=Priority Dependency=(null)
+   Requeue=1 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=0:0
+   RunTime=00:00:00 TimeLimit=12:00:00 TimeMin=N/A
+   SubmitTime={T-50m} EligibleTime={T-50m}
+   AccrueTime={T-50m}
+   StartTime={T+5h} EndTime={T+17h} Deadline=N/A
+   Partition=h200_public AllocNode:Sid=log-1:112233
+   ReqNodeList=(null) ExcNodeList=(null)
+   NodeList=
+   NumNodes=1 NumCPUs=16 NumTasks=1 CPUs/Task=16 ReqB:S:C:T=0:0:*:*
+   ReqTRES=cpu=16,mem=180G,node=1,billing=16,gres/gpu=1
+   AllocTRES=(null)
+   Command=/scratch/abc1234/demo-project/scripts/run_probe_sweep_slurm.sh sweep h200
+   WorkDir=/scratch/abc1234/demo-project
+   StdErr=/scratch/abc1234/demo-project/logs/probe-sweep-h200_22601977.err
+   StdIn=/dev/null
+   StdOut=/scratch/abc1234/demo-project/logs/probe-sweep-h200_22601977.out
+   TresPerNode=gres/gpu:h200:1
+

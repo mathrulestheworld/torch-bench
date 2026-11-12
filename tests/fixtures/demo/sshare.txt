@@ -1,0 +1,2 @@
+Account|User|RawShares|NormShares|RawUsage|EffectvUsage|FairShare
+torch_pr_000_general|abc1234|1|0.004000|48211932|0.071200|0.118421

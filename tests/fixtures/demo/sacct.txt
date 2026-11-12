@@ -1,0 +1,19 @@
+JobID|State|Partition|Submit|Eligible|Start|End|Elapsed|Timelimit|ExitCode|AllocTRES|ReqTRES|Reason|JobName
+22590101|COMPLETED|l40s_public|{T-2d}|{T-2d}|{T-2870m}|{T-2700m}|02:50:00|06:00:00|0:0|billing=8,cpu=8,gres/gpu:l40s=1,gres/gpu=1,mem=96G,node=1|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|None|pilot-calibrate
+22590102_0|COMPLETED|l40s_public|{T-2d}|{T-2700m}|{T-2688m}|{T-2560m}|02:08:00|04:00:00|0:0|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|None|pilot-finetune
+22590102_1|COMPLETED|l40s_public|{T-2d}|{T-2700m}|{T-2682m}|{T-2550m}|02:12:00|04:00:00|0:0|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|None|pilot-finetune
+22590102_2|FAILED|l40s_public|{T-2d}|{T-2700m}|{T-2660m}|{T-2655m}|00:05:00|04:00:00|1:0|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|None|pilot-finetune
+22590102_3|TIMEOUT|l40s_public|{T-2d}|{T-2700m}|{T-2660m}|{T-2420m}|04:00:10|04:00:00|0:0|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|None|pilot-finetune
+22590103|COMPLETED|l40s_public|{T-2d}|{T-2420m}|{T-2415m}|{T-2100m}|05:15:00|10:00:00|0:0|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|None|pilot-analyze
+22595540|CANCELLED by 3412345|h200_public|{T-30h}|{T-30h}|None|{T-21h}|00:00:00|12:00:00|0:0||billing=16,cpu=16,gres/gpu=1,mem=180G,node=1|None|probe-sweep-h200
+22595811|COMPLETED|h200_public|{T-28h}|{T-28h}|{T-25h}|{T-23h}|02:00:00|12:00:00|0:0|billing=16,cpu=16,gres/gpu=1,mem=180G,node=1|billing=16,cpu=16,gres/gpu=1,mem=180G,node=1|None|probe-sweep-h200
+22596020|COMPLETED|h200_public|{T-26h}|{T-26h}|{T-1170m}|{T-1100m}|01:10:00|12:00:00|0:0|billing=16,cpu=16,gres/gpu=1,mem=180G,node=1|billing=16,cpu=16,gres/gpu=1,mem=180G,node=1|None|probe-sweep-h200
+22596400|OUT_OF_MEMORY|h200_public|{T-20h}|{T-20h}|{T-11h}|{T-640m}|00:20:00|12:00:00|0:125|billing=16,cpu=16,gres/gpu=1,mem=180G,node=1|billing=16,cpu=16,gres/gpu=1,mem=180G,node=1|None|probe-sweep-h200
+22599001|COMPLETED|cs|{T-9h}|{T-9h}|{T-539m}|{T-520m}|00:19:00|01:00:00|0:0|billing=4,cpu=4,mem=32G,node=1|billing=4,cpu=4,mem=32G,node=1|None|tokenize|corpus
+22599002|COMPLETED|cs|{T-8h}|{T-8h}|{T-479m}|{T-470m}|00:09:00|01:00:00|0:0|billing=4,cpu=4,mem=32G,node=1|billing=4,cpu=4,mem=32G,node=1|None|tokenize|corpus
+22599003|COMPLETED|cs|{T-7h}|{T-7h}|{T-419m}|{T-400m}|00:19:00|01:00:00|0:0|billing=4,cpu=4,mem=32G,node=1|billing=4,cpu=4,mem=32G,node=1|None|tokenize|corpus
+22601411|COMPLETED|l40s_public|{T-5h}|{T-5h}|{T-282m}|{T-185m}|01:37:00|06:00:00|0:0|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|None|calibrate
+22601412_0|RUNNING|l40s_public|{T-3h}|{T-185m}|{T-73m}|Unknown|01:12:40|04:00:00|0:0|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|None|finetune-batch
+22601412_1|RUNNING|l40s_public|{T-3h}|{T-185m}|{T-73m}|Unknown|01:12:38|04:00:00|0:0|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|None|finetune-batch
+22601412_[4-18%4]|PENDING|l40s_public|{T-3h}|{T-185m}|Unknown|Unknown|00:00:00|04:00:00|0:0||billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|JobArrayTaskLimit|finetune-batch
+22601413|PENDING|l40s_public|{T-3h}|Unknown|Unknown|Unknown|00:00:00|1-00:00:00|0:0||billing=8,cpu=8,gres/gpu=1,mem=96G,node=1|Dependency|analyze-results

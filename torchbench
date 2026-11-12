@@ -1,0 +1,25 @@
+#!/bin/bash
+# The `torchbench` command. Works from a clone of the repo and from the installed copy.
+#   torchbench            start Torch Bench and open it in your browser
+#   torchbench help       list the other commands
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -d "$HERE/app/torchbench" ]; then
+  PROGRAM="$HERE"
+elif [ -d "$HERE/../program/app/torchbench" ]; then
+  PROGRAM="$(cd "$HERE/../program" && pwd)"
+else
+  PROGRAM="$HOME/torchbench/program"
+fi
+if [ ! -d "$PROGRAM/app/torchbench" ]; then
+  echo "Torch Bench is not installed at $PROGRAM. Run install.sh again." >&2
+  exit 1
+fi
+PYTHON="${TORCHBENCH_PYTHON:-/usr/bin/python3}"
+[ -x "$PYTHON" ] || PYTHON="$(command -v python3 || true)"
+if [ -z "$PYTHON" ]; then
+  echo "Python 3 is missing. On a Mac, run:  xcode-select --install   then try again." >&2
+  exit 1
+fi
+export PYTHONPATH="$PROGRAM/app${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PYTHON" -m torchbench "$@"

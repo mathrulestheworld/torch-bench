@@ -1,0 +1,9 @@
+
+Hostname: log-1 at Wed Nov 11 18:40:12 EST 2026
+
+Filesystem   Environment   Backed up?   Allocation       Current Usage
+Space        Variable                   Space / Files    Space(%) / Files(%)
+
+/home        $HOME         Yes/ThisWeek 50.0GB/30.0K     21.37GB(42.74%)/11212(37.37%)
+/scratch     $SCRATCH      No/Flushed   5.0TB/5.0M       4613.20GB(92.26%)/2437112(48.74%)
+/archive     $ARCHIVE      Yes/Weekly   2.0TB/20.0K      311.00GB(15.55%)/842(4.21%)
