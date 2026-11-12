@@ -142,6 +142,35 @@ class Flow(ServerCase):
         status, st = self.call("POST", "/api/login/start")
         self.assertEqual(st["step"], "vpn")
 
+    def test_project_and_sync_routes(self):
+        import shutil
+        self.call("POST", "/api/setup/save", {"netid": "abc1234", "mode": "owner"})
+        status, st = self.call("GET", "/api/project")
+        self.assertFalse(st["configured"])
+        self.assertEqual(st["defaults"]["remote_parent"], "/scratch/abc1234")
+        self.assertEqual(self.call("POST", "/api/project/save", {"project_name": "p", "remote_dir": "/scratch/other/p"})[0], 400)
+        status, st = self.call("POST", "/api/project/save", {"project_name": "study"})
+        self.assertEqual(status, 200, st)
+        self.assertTrue(st["configured"] and st["created_local"] and st["can_push"])
+        self.assertEqual(st["remote_dir"], "/scratch/abc1234/study")
+        self.assertEqual([p["key"] for p in self.call("GET", "/api/state")[1]["places"]][0], "project")
+        self.assertTrue(self.call("POST", "/api/sync/preview", {"direction": "push"})[1]["not_connected"])
+        self.assertEqual(self.call("POST", "/api/sync/preview", {"direction": "push"}, token=False)[0], 403)
+        self.assertFalse(self.call("POST", "/api/project/choose-folder", {})[1]["ok"])      # switched off in demo mode
+        if not shutil.which("rsync"):
+            return
+        self.open_login()
+        with open(os.path.join(st["local_dir"], "train.py"), "w") as f:
+            f.write("print(1)\n")
+        status, plan = self.call("POST", "/api/sync/preview", {"direction": "push"})
+        self.assertEqual(plan["files"], ["train.py"])
+        self.assertTrue(self.call("POST", "/api/sync/start", {"plan": "nope"})[1]["stale"])
+        self.assertTrue(self.call("POST", "/api/sync/start", {"plan": plan["plan"]})[1]["started"])
+        job = self.wait_for(lambda: (lambda j: j if j.get("done") else None)(self.call("GET", "/api/sync/job")[1]), what="push to finish")
+        self.assertEqual(job["exit"], 0)
+        self.assertTrue((self.tmp / "fs" / "scratch" / "study" / "train.py").exists())
+        self.assertTrue(self.call("GET", "/api/project")[1]["remote_exists"])
+
     def test_project_file_import(self):
         status, st = self.call("POST", "/api/setup/save", {
             "netid": "xyz9876", "project_name": "shared-proj", "remote_dir": "",

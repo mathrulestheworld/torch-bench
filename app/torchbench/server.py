@@ -18,13 +18,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, commands, config, paths, sshconf
+from . import __version__, commands, config, paths, project, sshconf
 from .cmdlog import CommandLog
 from .dashboard import GOOD_TO_KNOW, Dashboard
 from .files import Files
 from .login import LoginSession
 from .redact import Redactor
 from .ssh import SSH
+from .sync import Sync
 from .terminal import TerminalSession
 
 DEFAULT_PORT = 8642
@@ -68,6 +69,7 @@ class App:
         self.dashboard: Optional[Dashboard] = None
         self.login: Optional[LoginSession] = None
         self.files: Optional[Files] = None
+        self.sync: Optional[Sync] = None
         self.term: Optional[TerminalSession] = None
         self._lock = threading.Lock()
         self.stop_server = lambda: None
@@ -79,8 +81,9 @@ class App:
             self.ssh = SSH(self.cfg["ssh_alias"], self.log)
             self.dashboard = Dashboard(self.cfg, self.ssh)
             self.files = Files(self.cfg, self.ssh)
+            self.sync = Sync(self.cfg, self.ssh, self.log)
         else:
-            self.ssh = self.dashboard = self.files = None
+            self.ssh = self.dashboard = self.files = self.sync = None
 
     def need_config(self) -> None:
         if not self.cfg or self.ssh is None or self.dashboard is None:
@@ -112,8 +115,16 @@ class App:
             if key in body:
                 raw[key] = body[key]
         netid = str(raw.get("netid", "")).strip().lower()
+        old_netid = self.cfg.get("netid", "") if self.cfg else ""
+        if old_netid and netid != old_netid and "remote_dir" not in body:      # a corrected NetID moves the project path with it
+            for top in ("scratch", "home", "archive"):
+                prefix = "/%s/%s/" % (top, old_netid)
+                if str(raw.get("remote_dir", "")).startswith(prefix):
+                    raw["remote_dir"] = "/%s/%s/%s" % (top, netid, raw["remote_dir"][len(prefix):])
         if self.demo and not str(raw.get("project_name", "")).strip():   # the demo comes with a made-up project
             raw["project_name"], raw["sbatch_account"] = "demo-project", raw.get("sbatch_account") or "torch_pr_000_general"
+            if os.path.isdir(project.default_local("demo-project")):
+                raw["local_dir"] = project.default_local("demo-project")
         template = body.get("remote_dir_template")
         if isinstance(template, str) and "{netid}" in template and not str(raw.get("remote_dir", "")).strip():
             raw["remote_dir"] = template.replace("{netid}", netid)
@@ -346,6 +357,42 @@ class Handler(BaseHTTPRequestHandler):
             app.need_config()
             assert app.dashboard is not None
             return 200, app.dashboard.measure_disk()
+        # the project and its two folders
+        if route == ("GET", "/api/project"):
+            app.need_config()
+            return 200, project.status(app.cfg, app.ssh)
+        if route == ("POST", "/api/project/save"):
+            app.need_config()
+            if app.sync and app.sync.job_state().get("active") and not app.sync.job_state().get("done"):
+                raise ApiError("Wait for the copy that is running to finish before changing the project.", 409)
+            try:
+                saved = project.save(app.cfg, body)
+            except config.ConfigError as exc:
+                raise ApiError(str(exc))
+            app.load()
+            out = project.status(app.cfg, app.ssh)
+            out.update({"created_local": saved["created_local"], "imported_excludes": saved["imported_excludes"]})
+            return 200, out
+        if route == ("POST", "/api/project/choose-folder"):
+            app.need_config()
+            if app.demo:
+                return 200, {"ok": False, "error": "The folder picker is switched off in the demo. Type a path instead."}
+            return 200, project.choose_folder(str(body.get("start", "")))
+
+        # push and pull: always a preview first, then a confirmed copy
+        if path.startswith("/api/sync/"):
+            app.need_config()
+            assert app.sync is not None
+            if route == ("POST", "/api/sync/preview"):
+                return 200, app.sync.preview(str(body.get("direction", "")), str(body.get("rel", "")))
+            if route == ("POST", "/api/sync/start"):
+                return 200, app.sync.start(str(body.get("plan", "")))
+            if route == ("GET", "/api/sync/job"):
+                return 200, app.sync.job_state()
+            if route == ("POST", "/api/sync/cancel"):
+                app.sync.cancel()
+                return 200, app.sync.job_state()
+
         # files and logs: read-only, inside the project folder
         if route == ("GET", "/api/files/list"):
             app.need_config()

@@ -1,6 +1,7 @@
 """Who may do what, and the checks that guard anything that changes the cluster.
 
-So far the app itself only looks, so every action below that changes something answers "not in this version".
+The app itself looks, and copies files with push and pull; every other action below that changes
+something answers "not in this version".
 The table is here from the start so later milestones add actions in one audited place.
 """
 from __future__ import annotations
@@ -11,13 +12,13 @@ from typing import Any, Dict, List, Optional
 ACTIONS = {
     "view": ("owner", "colleague"),          # dashboard, logs, files, commands page
     "terminal": ("owner", "colleague"),      # the escape hatch: the person types as themselves
-    "pull": ("owner", "colleague"),          # M1
-    "push": ("owner",),                      # M1: overwrites the cluster copy
+    "pull": ("owner", "colleague"),          # copies results to the Mac, after a preview
+    "push": ("owner",),                      # overwrites the cluster copy, after a preview: for whoever runs the project
     "submit": ("owner", "colleague"),        # M2: registered launchers only; colleagues only "safe" ones
     "cancel": ("owner",),                    # M2: one named job, after confirmation
     "cleanup": ("owner",),                   # M3: reviewed-plan flow only
 }
-AVAILABLE_NOW = ("view", "terminal")
+AVAILABLE_NOW = ("view", "terminal", "pull", "push")
 
 
 def allowed(mode: str, action: str) -> bool:

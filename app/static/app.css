@@ -286,6 +286,21 @@ table.places td:first-child { width: 1%; white-space: nowrap; padding-right: 32p
 table.places td:nth-child(3) { white-space: normal; width: auto; }
 .term-box .xterm { height: 100%; }
 
+/* ---- project page ---- */
+.panel.narrow { max-width: 640px; }
+input.wide { max-width: 520px; }
+.field .row { flex-wrap: nowrap; }
+table.pair { margin: 8px 0 22px; max-width: 900px; }
+table.pair td:first-child { font-size: 15px; font-weight: 600; }
+table.pair td:nth-child(3) { color: var(--ink-soft); }
+.sync-actions { margin-bottom: 10px; }
+#tb-sync { margin-top: 26px; max-width: 900px; }
+.sync-box { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 22px 24px; }
+.sync-box h2 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+.sync-box > p { margin-bottom: 12px; max-width: 70ch; }
+.sync-box .row { margin-top: 16px; }
+pre.filelist { max-height: 280px; margin: 0 0 4px; }
+
 /* ---- help page ---- */
 .help { max-width: 760px; }
 .help h2 { font-size: 20px; font-weight: 600; margin: 36px 0 6px; }

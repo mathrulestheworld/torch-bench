@@ -45,7 +45,7 @@ class SshConfig(FakeTorchCase):
         self.path().parent.mkdir(parents=True)
         self.path().write_text("Host other\n  User me\n")
         sshconf.install(self.config())
-        sshconf.install(self.config(netid="xyz9876"))
+        sshconf.install(self.config(netid="xyz9876", remote_dir="/scratch/xyz9876/demo-project"))
         text = self.path().read_text()
         self.assertIn("User xyz9876", text)
         self.assertNotIn("User abc1234", text)

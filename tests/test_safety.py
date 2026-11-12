@@ -17,7 +17,8 @@ class Registry(unittest.TestCase):
                   commands.priority("abc1234"), commands.partitions(["l40s_public", "cs"]), commands.quota(),
                   commands.job_detail("22601412_3"), commands.disk_usage(self.ROOT)]
         scripted = [commands.list_dir(self.ROOT, "results"), commands.read_file(self.ROOT, "logs/a.out", -1),
-                    commands.download_file(self.ROOT, "results/x.png"), commands.job_logs(self.ROOT, "22601412_3")]
+                    commands.download_file(self.ROOT, "results/x.png"), commands.job_logs(self.ROOT, "22601412_3"),
+                    commands.dir_exists(self.ROOT)]
         built = simple + scripted + [commands.terminal(self.ROOT)]
         self.assertEqual(sorted(c.name for c in built), sorted(commands.all_names()))
         for c in built:
@@ -33,11 +34,12 @@ class Registry(unittest.TestCase):
 
     def test_file_scripts_only_read(self):
         import re, shlex
-        scripts = (commands.LIST_SCRIPT, commands.READ_SCRIPT, commands.DOWNLOAD_SCRIPT, commands.JOB_LOGS_SCRIPT)
+        scripts = (commands.LIST_SCRIPT, commands.READ_SCRIPT, commands.DOWNLOAD_SCRIPT, commands.JOB_LOGS_SCRIPT,
+                   commands.DIR_EXISTS_SCRIPT)
         for script in scripts:
             # every program a script may call, and nothing that writes, moves, deletes or computes
             words = set(re.findall(r"(?:^|[;|&({]|\$\()\s*([a-z][a-z0-9_-]*)(?=\s)", script))
-            self.assertLessEqual(words, {"realpath", "echo", "exit", "case", "find", "head", "stat", "tail", "cat", "if", "then", "fi", "esac",
+            self.assertLessEqual(words, {"realpath", "echo", "exit", "case", "find", "head", "stat", "tail", "cat", "if", "then", "else", "fi", "esac",
                                          "s", "o"}, words)      # s and o are the script's own size/offset variables
             for banned in ("rm ", "mv ", "cp ", "chmod", "tee", "sbatch", "scancel", "srun", "python", "curl", "wget", "-delete", "-exec"):
                 self.assertNotIn(banned, script)
@@ -222,6 +224,22 @@ class Config(FakeTorchCase):
             with self.assertRaises(config.ConfigError, msg="%s=%r" % (key, bad)):
                 self.config(**{key: bad})
 
+    def test_project_folder_must_be_in_your_own_space(self):
+        for ok in ("/scratch/abc1234/p", "/home/abc1234/code/p", "/archive/abc1234/p"):
+            self.assertEqual(self.config(remote_dir=ok)["remote_dir"], ok)
+        for bad in ("/scratch/someone_else/p", "/scratch/abc1234", "/etc", "/scratch/abc12345/p", "/tmp/p"):
+            with self.assertRaises(config.ConfigError, msg=bad):
+                self.config(remote_dir=bad)
+
+    def test_sync_settings_are_validated(self):
+        for key, bad in (("push_excludes", ["ok", "bad\npattern"]), ("push_excludes", "results"), ("pull_paths", ["../x"]),
+                         ("pull_paths", ["results; rm -rf x"]), ("pull_paths", ["/abs"]), ("pull_excludes", [5]),
+                         ("local_dir", "relative/path")):
+            with self.assertRaises(config.ConfigError, msg="%s=%r" % (key, bad)):
+                self.config(**{key: bad})
+        self.assertIn("results", config.defaults()["push_excludes"])       # results never go up
+        self.assertIn("*.safetensors", config.defaults()["pull_excludes"])  # weights never come down
+
     def test_project_file_has_no_identity(self):
         shared = config.shareable(self.config(mode="owner"))
         self.assertNotIn("netid", shared)
@@ -237,12 +255,15 @@ class Config(FakeTorchCase):
 
 
 class Policy(unittest.TestCase):
-    def test_this_version_only_views(self):
+    def test_who_may_do_what(self):
         for mode in ("owner", "colleague"):
             self.assertTrue(policy.allowed(mode, "view"))
             self.assertTrue(policy.allowed(mode, "terminal"))
-            for action in ("push", "pull", "submit", "cancel", "cleanup"):
+            self.assertTrue(policy.allowed(mode, "pull"))
+            for action in ("submit", "cancel", "cleanup"):          # not in this version, for anyone
                 self.assertFalse(policy.allowed(mode, action), action)
+        self.assertTrue(policy.allowed("owner", "push"))
+        self.assertFalse(policy.allowed("colleague", "push"))        # pushing is for whoever runs the project
 
     def test_full_scratch_blocks_submit(self):
         from helpers import fixture

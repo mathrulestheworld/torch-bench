@@ -3,10 +3,11 @@
 A small Mac app for using NYU's Torch HPC cluster without the command line. It runs on your Mac, opens in
 your browser, and talks to Torch over one shared SSH sign-in. Nothing is installed on Torch.
 
-**Status: M0 (connection + dashboard) plus files, logs and the built-in terminal from M1.** By itself the
-app only looks: it cannot submit, cancel, change or delete anything on the cluster. The terminal is the one
-deliberate exception, where you type as yourself. It has been tested offline against a stand-in for ssh and
-made-up data; see "Before you rely on it" for what still needs a real run.
+**Status: M0 and M1 of the build brief (connection, dashboard, files, logs, terminal, push and pull).** The
+app looks at Torch, and copies files in two directions after showing you exactly what it would copy. It
+cannot submit or cancel jobs or delete anything. The terminal is the one deliberate exception, where you type
+as yourself. It has been tested offline against a stand-in for ssh and made-up data; see "Before you rely on
+it" for what still needs a real run.
 
 ## What it does
 
@@ -21,6 +22,14 @@ made-up data; see "Before you rely on it" for what still needs a real run.
   gives one, and Torch Bench's own estimate from how long your recent jobs really waited. Fair-share score,
   storage quota with a loud warning above 90%, free GPUs per partition, and the last 7 days of finished
   jobs. Each job has "Find this job's log files".
+- **Project**: a project is a folder of code on your Mac and its copy on Torch, and you choose both. Typing
+  a name fills in `~/Desktop/<name>` and `/scratch/<netid>/<name>`; change either, or pick the Mac folder
+  with the macOS folder chooser. The Mac folder is created if missing; the first push creates the Torch one.
+  **Push** sends code Mac → Torch (replaces files that differ, deletes nothing, leaves out results, logs,
+  `.git` and the like). **Pull** brings `results` and `logs` back (replaces local copies that differ,
+  deletes nothing, leaves model weights on Torch). Both show the exact file list first and copy only when
+  you confirm it; if anything changed in between, you get the new list instead. In Files, any folder of the
+  project has "Copy this folder to my Mac".
 - **Files**: a read-only browser of your own folders on Torch: home, scratch, archive, and the project
   folder when one is set. Markdown, JSON, CSV and pictures are shown in place (a results `SUMMARY.md` reads
   like a page); anything can be downloaded (up to 100 MB). Logs open at the end, can follow new lines, and
@@ -33,8 +42,8 @@ made-up data; see "Before you rely on it" for what still needs a real run.
   **activity log**: every command sent to Torch with its output, also saved under
   `~/torchbench/logs/torch_shell/` (`history.log`, `last.txt`, `commands.jsonl`).
 
-Planned next, in order: push/pull buttons (the rest of M1); M2 launchers with a dry run, guarded cancel,
-notifications; M3 disk manager, GPU-utilisation check, "copy for Claude".
+Planned next, in order: M2 launchers with a dry run, guarded cancel, notifications; M3 disk manager,
+GPU-utilisation check, "copy for Claude".
 
 ## Install
 
@@ -87,14 +96,18 @@ These need a Mac and a real Torch sign-in, which the build environment did not h
    lines" on a running job's log, download a file, and run a few commands in the Terminal (including a
    full-screen one such as `less` or `nano`, and resizing the window). The file commands need GNU `find`,
    `stat` and `realpath` on Torch, which Red Hat provides.
-6. Check the **help links** in `~/torchbench/config.json` (the VPN one points at a Stern IT page).
+6. **Project, push and pull**: set up the project with its real folders, press Push and read the preview
+   before confirming (it should list only files you changed since the last push), then Pull. The folder
+   chooser button and macOS's own rsync are untested until this run.
+7. Check the **help links** in `~/torchbench/config.json` (the VPN one points at a Stern IT page).
 
 ## Safety rules, and where each is encoded
 
 | Rule | Where |
 | --- | --- |
 | No password or code is ever stored or logged. The app starts ssh and shows its prompts; the person authenticates. | `login.py` (typed text goes straight to the pty), `redact.py`, `tests/test_login.py::test_password_prompt_is_piped_and_never_kept` |
-| Read-only by default; the app has no mutating command at all. | `commands.py` is the only place commands are built; `ssh.py` refuses anything else and anything marked mutating; `policy.py` |
+| Read-only by default. The app's only operations that change files are push and pull. | `commands.py` is the only place commands are built, all read-only; `ssh.py` refuses anything else and anything marked mutating; `policy.py` |
+| Push and pull copy only what you confirmed, and never delete. | `sync.py` is the only place an rsync command is built (no `--delete`). `preview()` is a dry run; `start()` repeats it and copies only if the file list is unchanged. Locations come from the settings and are validated: the Torch folder must be inside your own scratch, home or archive; the Mac folder inside your home folder. Pushing is for the `owner` role. `tests/test_project_sync.py` |
 | The file browser stays inside your own folders and cannot change anything. | It starts from a fixed list of places (`config.places`: project, home, scratch, archive, or `browse_roots` in the settings). Paths are relative and validated in `commands.py`; one fixed guard script resolves the real path on Torch and refuses anything outside the chosen place, symlinks included; the scripts only call `realpath`, `find`, `stat`, `tail`, `head`, `cat`. `tests/test_files.py` |
 | The terminal is the one escape hatch; the app never types into it; sessions are recorded with secrets blanked. | `terminal.py` (only screen output is recorded, never keystrokes; token-shaped text and `NAME=secret` are blanked), `tests/test_terminal.py` |
 | Nothing heavy on the login node. | The registry holds only `squeue`, `sacct`, `sshare`, `sprio`, `sinfo`, `myquota`, `scontrol show job`, `du -sh` (manual button only), `hostname`, and the file reads above. Refreshes are stale-driven and stop when the window is hidden. |
@@ -110,6 +123,12 @@ Two deliberate choices to know about:
   `login.torch.hpc.nyu.edu` points at several machines with different host keys. That trades host-key
   checking for not being blocked by key-mismatch errors. If you would rather keep checking, edit the block.
 - If you already have your own working `Host torch` entry, Torch Bench uses it and writes nothing.
+- Push and pull are the app's own rsync, driven by the settings, rather than running the project's `push.sh`:
+  that is what makes the preview and the chosen locations possible. If the Mac folder has a `push.sh`, its
+  `--exclude` list (and `--cvs-exclude`) is copied into the settings when the project is set up, so the same
+  files are left out. Anything else that script does is not run.
+- Pull leaves out `*.safetensors`, `*.pt`, `*.pth`, `*.bin`, `*.ckpt`, `cache/` and `checkpoints/` by default.
+  If a project keeps small analysis results in `.pt` files, edit `pull_excludes` in the settings.
 - Downloads go through `ssh ... cat` rather than `scp`, so the same folder guard applies to them.
 - The brief scoped the file browser to the project folder; at the owner's request it now also covers the
   person's own home, scratch and archive folders.
@@ -126,12 +145,14 @@ hard-coded in the program.
 | `netid` | Your NYU NetID |
 | `mode` | `colleague` (default: watch and read) or `owner` (later: also submit, cancel, clean up) |
 | `ssh_alias`, `remote_host` | `torch`, `login.torch.hpc.nyu.edu` |
-| `project_name`, `remote_dir`, `local_dir` | The project, its folder on Torch, its folder on this Mac |
+| `project_name`, `remote_dir`, `local_dir` | The project, its folder on Torch (default `/scratch/<netid>/<name>`), its folder on this Mac (default `~/Desktop/<name>`). Set on the Project page |
 | `sbatch_account` | The SLURM account jobs are charged to |
 | `default_partition`, `gpu_partitions`, `cpu_partitions` | `l40s_public`; `l40s_public`, `h200_public`; `cs` |
 | `launchers` | Registered submit scripts (used from M2) |
 | `help_links` | The list on the Help page: `title`, `url`, `note` |
 | `quota_warn_percent`, `history_days` | 90, 7 |
+| `push_excludes`, `push_cvs_exclude` | What a push leaves out (rsync patterns) |
+| `pull_paths`, `pull_excludes` | Folders a pull brings back (`results`, `logs`) and what it leaves on Torch (weights) |
 | `browse_roots` | Folders the Files page offers, as `label` + `path`. Empty means `/home/<netid>`, `/scratch/<netid>`, `/archive/<netid>` |
 
 An owner can save a **project file** from the Help page; a colleague loads it during setup and only has to
@@ -144,6 +165,7 @@ type their NetID.
       commands.py                 the registry: the only commands that can reach Torch
       ssh.py                      ControlMaster + BatchMode wrapper (the scripts/torch.sh pattern)
       login.py, ptyexec.py        guided sign-in under a pty
+      project.py, sync.py         the project's two folders; push and pull (preview, then confirmed copy)
       files.py                    read-only file browser, log viewer, failure explanations
       terminal.py                 the built-in terminal (pty, recording)
       sshconf.py                  the marked block in ~/.ssh/config
@@ -157,10 +179,10 @@ type their NetID.
 
     python3 -m unittest discover -s tests
 
-135 tests (6 of them wait for real recordings), all offline: the SSH wrapper, the parsers, the registry,
+158 tests (6 of them wait for real recordings), all offline: the SSH wrapper, the parsers, the registry,
 redaction, the SSH-settings writer, the guided sign-in and the terminal end to end under a real pty, the file
-browser (through the real guard script and through the imitation the macOS demo uses), the dashboard, and
-the server. They pass on Python 3.9 (what macOS ships) and 3.13.
+browser (through the real guard script and through the imitation the macOS demo uses), project setup, push
+and pull with a real rsync at both ends, the dashboard, and the server. They pass on Python 3.9 (what macOS ships) and 3.13.
 
 Acceptance tests from the build brief covered so far, and how:
 
@@ -171,6 +193,7 @@ Acceptance tests from the build brief covered so far, and how:
 | Pending array job shows a human-readable reason and the fair-share number | Passes (`test_dashboard.py`) |
 | Quota above 90% warns loudly; the submit block is ready for M2 | Passes (`test_dashboard.py`, `test_safety.py::test_full_scratch_blocks_submit`) |
 | Tail a running job's `.err` live; download a `SUMMARY.md` and see it rendered | Passes against the stand-in (`test_files.py`, and walked in a browser in demo mode); needs the real run above |
+| Push and pull show their output and say plainly that push overwrites the cluster copy | Passes against the stand-in (`test_project_sync.py`, walked in a browser in demo mode); needs the real run above |
 | Unit tests for the SSH wrapper, parsers and registry against fixtures | Passes, on synthetic fixtures; real ones to be recorded |
 
 The brief's wording "only one Terminal login" was changed to "one guided sign-in" and rule 1's "never

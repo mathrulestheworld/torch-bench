@@ -9,6 +9,8 @@ It imitates just what Torch Bench relies on:
                                       The guarded file commands (`bash -c <script> torchbench <root> <path> ...`) are
                                       really run, against the made-up filesystem in $FAKE_SSH_FS, when GNU find
                                       is available (Linux); otherwise (macOS demo) they are imitated in Python.
+                                      `rsync --server ...` (the far end of a push or pull) runs a real local rsync
+                                      on the made-up filesystem.
   ssh -tt ... <alias> [command]       the built-in terminal: a local shell in the made-up project folder
   ssh <alias> echo MARKER             an interactive sign-in, scripted by $FAKE_SSH_LOGIN:
         device (default) | polling | password | hostkey | odd | denied | unreachable
@@ -170,7 +172,7 @@ def map_path(path):
     """A pretend cluster path -> the made-up filesystem here: /scratch/<netid>/x -> fs/scratch/x."""
     parts = [x for x in path.split("/") if x]
     if path.startswith("/") and len(parts) >= 2 and parts[0] in ("home", "scratch", "archive"):
-        return os.path.join(FS, parts[0], *parts[2:])
+        return os.path.join(FS, parts[0], *parts[2:]) + ("/" if path.endswith("/") else "")   # rsync cares about the slash
     return path
 
 
@@ -181,6 +183,9 @@ def emulate(script, args):
     def fail(code, message):
         sys.stderr.write(message + "\n")
         return code
+    if script.startswith('if [ -d "$1" ]'):
+        out.write(b"exists\n" if os.path.isdir(args[0]) else b"missing\n")
+        return 0
     if not os.path.exists(args[0]):
         return fail(4, "The project folder was not found on Torch." if '"$r/logs"' in script else "No such file or folder.")
     r = os.path.realpath(args[0])
@@ -270,6 +275,13 @@ def run(command_text):
         f.write(command_text + "\n")
     if word == "bash":
         return run_script(command_text)
+    if word == "rsync":                      # the far end of a push or pull: a real rsync on the made-up filesystem
+        import shlex
+        parts = shlex.split(command_text)
+        if "--server" not in parts:
+            sys.stderr.write("rsync: only --server is imitated\n")
+            return 2
+        os.execvp("rsync", [map_path(a) if a.startswith("/") else a for a in parts])
     path = os.path.join(FIXTURES, word + ".txt")
     if not re.match(r"^[a-z]+$", word) or not os.path.exists(path):
         sys.stderr.write("bash: %s: command not found\n" % word)

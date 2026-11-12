@@ -8,7 +8,7 @@
   var S = {
     state: null, view: "jobs", dash: null, dashSig: "", dashAt: 0, open: {}, details: {}, disk: null,
     wizard: 0, form: {}, cmds: [], cmdLast: 0, showRoutine: false, timers: {}, signin: null,
-    arg: "", fileGen: 0, term: null, termGen: 0, jobLogs: {}
+    arg: "", fileGen: 0, term: null, termGen: 0, jobLogs: {}, projGen: 0, projEdit: false, projNote: ""
   };
 
   // ---- small helpers -------------------------------------------------------------------------
@@ -31,7 +31,7 @@
     if (Array.isArray(kid)) { kid.forEach(function (k) { add(el, k); }); return; }
     el.appendChild(typeof kid === "string" || typeof kid === "number" ? document.createTextNode(String(kid)) : kid);
   }
-  function show(el) { main.replaceChildren.apply(main, Array.prototype.slice.call(arguments)); }
+  function show() { main.replaceChildren.apply(main, Array.prototype.filter.call(arguments, function (x) { return x != null && x !== false; })); }
   function api(method, path, body) {
     var opts = { method: method, headers: { "X-Torchbench-Token": TOKEN } };
     if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
@@ -240,18 +240,13 @@
       add(panel, [h("h1", {}, "About you"),
         h("div", { class: "field" }, h("label", { for: "tb-netid" }, "Your NYU NetID ", h("span", { class: "hint" }, "for example abc1234")), inp("tb-netid", "netid")),
         h("div", { class: "field", role: "radiogroup", "aria-label": "How you will use Torch Bench" },
-          radio("colleague", "I want to follow the work", "Watch jobs, read results and logs. Nothing you do here can change the project."),
-          radio("owner", "I run this project", "Everything above; later versions add submitting and cancelling jobs.")),
+          radio("colleague", "I want to follow the work", "Watch jobs, read files and logs, copy results to this Mac. Nothing here changes the code on Torch."),
+          radio("owner", "I run a project", "Everything above, plus pushing your code to Torch. Later versions add submitting and cancelling jobs.")),
         h("div", { class: "field" }, h("label", { for: "tb-file" }, "Project file ", h("span", { class: "hint" }, "optional. The person who runs the project can give you one; it fills in the rest.")), file, imported),
-        h("details", { class: "more", open: !!(f.project_name || f.remote_dir || f.sbatch_account) }, h("summary", {}, "Project details (optional; you can add them later in the settings file)"),
-          h("div", {},
-            h("div", { class: "field" }, h("label", { for: "tb-proj" }, "Project name"), inp("tb-proj", "project_name", "my-project")),
-            h("div", { class: "field" }, h("label", { for: "tb-rdir" }, "Project folder on Torch ", h("span", { class: "hint" }, "leave empty for /scratch/your-netid/project-name")), inp("tb-rdir", "remote_dir", "/scratch/abc1234/my-project")),
-            h("div", { class: "field" }, h("label", { for: "tb-acct" }, "SLURM account ", h("span", { class: "hint" }, "the allocation jobs are charged to")), inp("tb-acct", "sbatch_account", "torch_pr_000_general")),
-            h("div", { class: "field" }, h("label", { for: "tb-ldir" }, "Project folder on this Mac"), inp("tb-ldir", "local_dir", "~/Desktop/my-project")))),
         err,
         h("div", { class: "row" }, h("button", { onclick: function () {
-          var body = { netid: f.netid, mode: f.mode, project_name: f.project_name, remote_dir: f.remote_dir, sbatch_account: f.sbatch_account, local_dir: f.local_dir };
+          var body = { netid: f.netid, mode: f.mode };
+          if (f.importedName) { body.project_name = f.project_name; body.remote_dir = f.remote_dir; body.sbatch_account = f.sbatch_account; }
           Object.keys(f.extra || {}).forEach(function (k) { body[k] = f.extra[k]; });
           api("POST", "/api/setup/save", body).then(function (s2) { S.state = s2; go(2); }, function (e) { err.textContent = e.message; });
         } }, "Save and continue"), h("button", { class: "quiet", onclick: function () { go(0); } }, "Back"))]);
@@ -679,7 +674,9 @@
             e.kind === "link" ? h("span", { class: "hint" }, e.link_to === "missing" ? "  broken link" : "  link") : null),
           h("td", { class: "num" }, e.size != null ? bytes(e.size) : ""), h("td", {}, e.modified));
       });
-      show(crumbs(place, rel),
+      var pull = place === "project" && rel && S.state.config.local_dir
+        ? h("div", { class: "toolbar" }, h("a", { class: "button quiet small", href: "#project/pull/" + encodeURIComponent(rel) }, "Copy this folder to my Mac")) : null;
+      show(crumbs(place, rel), pull,
         r.entries.length ? h("table", { class: "grid files" }, h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Name"), h("th", { scope: "col", class: "num" }, "Size"), h("th", { scope: "col" }, "Changed"))), h("tbody", {}, rows))
                          : h("p", { class: "empty" }, "This folder is empty."),
         r.truncated ? h("p", { class: "hint" }, "Only the first 5,000 entries are shown.") : null);
@@ -792,6 +789,146 @@
     load(isLog);
   }
 
+  // ---- project page: two folders, push and pull ----------------------------------------------
+  function drawProject() {
+    var gen = ++S.projGen;
+    stop("sync");
+    if (!S.projShown) show(h("p", { class: "loading" }, "Looking at the project's folders"));
+    api("GET", "/api/project").then(function (st) {
+      if (gen !== S.projGen || S.view !== "project") return;
+      S.projShown = true;
+      if (!st.configured || S.projEdit) { projectForm(st); return; }
+      projectHome(st);
+    }, function (e) { show(h("div", { class: "notice stop" }, h("div", {}, h("strong", {}, "The project could not be read"), h("p", {}, e.message)))); });
+  }
+
+  function projectForm(st) {
+    var editing = st.configured, d = st.defaults, err = h("p", { class: "error-text", role: "alert" });
+    var name = h("input", { type: "text", id: "tb-pname", value: st.name || "", placeholder: "my-project", autocomplete: "off", spellcheck: "false" });
+    var local = h("input", { type: "text", id: "tb-plocal", class: "wide", value: st.local_dir || "", autocomplete: "off", spellcheck: "false" });
+    var remote = h("input", { type: "text", id: "tb-premote", class: "wide", value: st.remote_dir || "", autocomplete: "off", spellcheck: "false" });
+    var account = h("input", { type: "text", id: "tb-pacct", value: st.sbatch_account || "", placeholder: "torch_pr_000_general", autocomplete: "off", spellcheck: "false" });
+    var touchedLocal = !!st.local_dir, touchedRemote = !!st.remote_dir;
+    function fill() {
+      var n = name.value.trim();
+      if (!touchedLocal) local.value = n ? d.local_parent + "/" + n : "";
+      if (!touchedRemote) remote.value = n ? d.remote_parent + "/" + n : "";
+    }
+    name.addEventListener("input", fill);
+    local.addEventListener("input", function () { touchedLocal = true; });
+    remote.addEventListener("input", function () { touchedRemote = true; });
+    var choose = st.can_choose_folder ? h("button", { type: "button", class: "quiet", onclick: function (e) {
+      e.target.disabled = true;
+      api("POST", "/api/project/choose-folder", { start: local.value }).then(function (r) {
+        e.target.disabled = false;
+        if (r.path) { local.value = r.path; touchedLocal = true; } else if (r.error) err.textContent = r.error;
+      }, function (x) { e.target.disabled = false; err.textContent = x.message; });
+    } }, "Choose") : null;
+    var form = h("form", { class: "panel narrow", onsubmit: function (e) {
+        e.preventDefault(); err.textContent = "";
+        api("POST", "/api/project/save", { project_name: name.value, local_dir: local.value, remote_dir: remote.value, sbatch_account: account.value }).then(function (r) {
+          S.projEdit = false;
+          S.projNote = (r.created_local ? "Created " + r.local_dir + " on this Mac. " : "") + (r.imported_excludes ? "This folder has its own push.sh, so a push will leave out the same files that script does." : "");
+          api("GET", "/api/state").then(function (s2) { S.state = s2; drawTop(); });
+          projectHome(r);
+        }, function (x) { err.textContent = x.message; });
+      } },
+      h("h1", {}, editing ? "Project name and folders" : "Set up a project"),
+      h("p", {}, "A project is a folder of code on this Mac and its copy on Torch. Code goes from the Mac to Torch; results come back."),
+      h("div", { class: "field" }, h("label", { for: "tb-pname" }, "Project name"), name),
+      h("div", { class: "field" }, h("label", { for: "tb-plocal" }, "Folder on this Mac ", h("span", { class: "hint" }, "created if it does not exist")),
+        h("div", { class: "row" }, local, choose)),
+      h("div", { class: "field" }, h("label", { for: "tb-premote" }, "Folder on Torch ", h("span", { class: "hint" }, "inside your scratch, home or archive; your first push creates it")), remote),
+      h("div", { class: "field" }, h("label", { for: "tb-pacct" }, "SLURM account ", h("span", { class: "hint" }, "optional; the allocation jobs are charged to")), account),
+      err,
+      h("div", { class: "row" }, h("button", { type: "submit" }, editing ? "Save" : "Create project"),
+        editing ? h("button", { type: "button", class: "quiet", onclick: function () { S.projEdit = false; drawProject(); } }, "Cancel") : null));
+    show(form);
+    if (!editing) setTimeout(function () { name.focus(); }, 0);
+  }
+
+  function projectHome(st) {
+    var panel = h("div", { id: "tb-sync", "aria-live": "polite" });
+    var torchState = st.remote_exists === true ? "ready" : st.remote_exists === false ? "not there yet; your first push creates it" : "sign in to check";
+    var macState = st.local_exists ? (st.local_empty ? "ready, empty so far" : "ready") : "missing";
+    var pushBtn = h("button", { onclick: function () { preview("push", ""); }, disabled: !st.can_push, title: st.can_push ? null : "Pushing is for the person who runs the project" }, "Push code to Torch");
+    var pullBtn = h("button", { class: st.can_push ? "quiet" : "", onclick: function () { preview("pull", ""); } }, "Pull results to this Mac");
+    show(h("h1", { class: "page-title" }, st.name),
+      S.projNote ? h("p", { class: "ok-line" }, S.projNote) : null,
+      h("table", { class: "grid places pair" }, h("tbody", {},
+        h("tr", {}, h("td", {}, "On this Mac"), h("td", { class: "path" }, st.local_dir), h("td", {}, macState)),
+        h("tr", {}, h("td", {}, "On Torch"), h("td", { class: "path" }, st.remote_dir), h("td", {}, torchState)))),
+      h("div", { class: "row sync-actions" }, pushBtn, pullBtn,
+        h("button", { class: "link", onclick: function () { S.projEdit = true; S.projNote = ""; drawProject(); } }, "Change name or folders")),
+      h("p", { class: "hint" }, (st.can_push ? "Push sends your code to Torch and replaces files there that differ. " : "Pushing code is for the person who runs the project. ")
+        + "Pull brings back " + st.pull_paths.join(" and ") + ", without model weights. Both show you the list first and delete nothing."),
+      panel);
+    S.projNote = "";
+
+    function fail(message, r) {
+      panel.replaceChildren(h("div", { class: "notice flame" }, h("div", {}, h("strong", {}, r && r.not_connected ? "Not connected to Torch" : "That did not work"), h("p", {}, message)),
+        r && r.not_connected ? h("button", { onclick: openSignin }, "Sign in to Torch") : null));
+    }
+    function preview(direction, rel) {
+      panel.replaceChildren(h("p", {}, h("span", { class: "pulse" }), "Checking what would be copied. Nothing is copied yet."));
+      api("POST", "/api/sync/preview", { direction: direction, rel: rel }).then(function (r) { r.ok ? showPreview(r) : fail(r.error, r); }, function (x) { fail(x.message); });
+    }
+    function showPreview(r) {
+      var push = r.direction === "push", n = r.count, size = r.bytes != null && n ? " (" + bytes(r.bytes) + ")" : "";
+      var where = push ? "to Torch" : "to this Mac";
+      var kids = [];
+      if (r.changed) kids.push(h("p", { class: "error-text" }, "The files changed after the preview, so nothing was copied. This is the new list."));
+      if (!n) {
+        kids.push(h("h2", {}, push ? "Nothing to push" : "Nothing to pull"),
+          h("p", {}, push ? "Torch already has every file in the Mac folder." : (r.not_there.length ? "There is no " + r.not_there.join(" or ") + " folder in the project on Torch yet." : "This Mac already has everything.")),
+          h("div", { class: "row" }, h("button", { class: "quiet", onclick: function () { panel.replaceChildren(); } }, "Close")));
+      } else {
+        kids.push(h("h2", {}, (push ? "A push would send " : "A pull would copy ") + plural(n, "file", "files") + size + " " + where),
+          h("p", {}, push ? "Files with the same name on Torch are replaced, even ones edited there. Nothing on Torch is deleted."
+                          : "Files with the same name on this Mac are replaced. Nothing is deleted, and model weights stay on Torch."),
+          h("pre", { class: "raw light filelist", tabindex: "0" }, r.files.join("\n") + (r.more ? "\n… and " + r.more + " more" : "")),
+          !push && r.not_there.length ? h("p", { class: "hint" }, "Not on Torch yet: " + r.not_there.join(", ") + ".") : null,
+          h("details", { class: "explain" }, h("summary", {}, "What is left out, and the exact command"),
+            h("p", {}, "Left out: " + r.left_out.join(", ") + "."), h("pre", { class: "raw" }, r.commands.join("\n\n"))),
+          h("div", { class: "row" }, h("button", { onclick: function (e) {
+              e.target.disabled = true;
+              api("POST", "/api/sync/start", { plan: r.plan }).then(function (s2) {
+                if (s2.started) watch();
+                else if (s2.changed) showPreview(s2);
+                else if (s2.nothing) preview(r.direction, r.rel);
+                else fail(s2.error, s2);
+              }, function (x) { fail(x.message); });
+            } }, (push ? "Push " : "Pull ") + plural(n, "file", "files")),
+            h("button", { class: "quiet", onclick: function () { panel.replaceChildren(); } }, "Cancel")));
+      }
+      panel.replaceChildren(h("div", { class: "sync-box" }, kids.filter(Boolean)));
+    }
+    function watch() {
+      api("GET", "/api/sync/job").then(function (j) {
+        if (S.view !== "project" || !j.active) return;
+        var push = j.direction === "push", out = h("pre", { class: "raw filelist" }, j.output || "Starting");
+        if (!j.done) {
+          panel.replaceChildren(h("div", { class: "sync-box" }, h("h2", {}, h("span", { class: "pulse" }), push ? "Pushing to Torch" : "Pulling to this Mac"), out,
+            h("div", { class: "row" }, h("button", { class: "quiet", onclick: function () { api("POST", "/api/sync/cancel"); } }, "Stop"))));
+          out.scrollTop = out.scrollHeight;
+          later("sync", 1000, watch);
+        } else {
+          var good = j.exit === 0;
+          panel.replaceChildren(h("div", { class: "sync-box" },
+            h("h2", {}, good ? (push ? "Pushed " : "Pulled ") + plural(j.count, "file", "files") + (j.seconds >= 2 ? " in " + dur(j.seconds) : "") + (push ? " to Torch" : " to this Mac") : j.cancelled ? "Stopped before it finished" : "The copy did not finish"),
+            good ? null : h("p", {}, "Files copied before it stopped are in place; run it again to finish. The output below says what happened."),
+            h("details", { class: "explain", open: !good }, h("summary", {}, "What rsync printed"), out),
+            h("div", { class: "row" }, h("button", { class: "quiet", onclick: function () { drawProject(); } }, "Done"))));
+        }
+      }, function () { later("sync", 2000, watch); });
+    }
+    // Coming back to the page while a copy runs, or arriving from "Copy this folder to my Mac".
+    api("GET", "/api/sync/job").then(function (j) {
+      if (j.active && !j.done) watch();
+      else if (S.arg.indexOf("pull/") === 0) { var rel = S.arg.slice(5); S.arg = ""; history.replaceState(null, "", "#project"); preview("pull", rel); }
+    }, function () {});
+  }
+
   // ---- terminal page -------------------------------------------------------------------------
   function drawTerminal() {
     var gen = ++S.termGen, box = h("div", { class: "term-box" }), status = h("p", { class: "hint", role: "status" });
@@ -855,9 +992,11 @@
     var hash = (location.hash || "#jobs").slice(1), cut = hash.indexOf("/");
     var want = cut < 0 ? hash : hash.slice(0, cut);
     try { S.arg = cut < 0 ? "" : decodeURIComponent(hash.slice(cut + 1)); } catch (x) { S.arg = ""; }
-    S.view = ["jobs", "files", "file", "terminal", "commands", "help"].indexOf(want) >= 0 ? want : "jobs";
+    S.view = ["jobs", "project", "files", "file", "terminal", "commands", "help"].indexOf(want) >= 0 ? want : "jobs";
     stop("dash"); stop("cmds"); stop("follow"); S.fileGen++; S.termGen++;
     if (S.term && S.view !== "terminal") { try { S.term.dispose(); } catch (x) {} S.term = null; }
+    stop("sync");
+    if (S.view === "project") { drawTop(); S.projShown = false; drawProject(); return; }
     if (S.view === "files") { drawTop(); drawFiles(); return; }
     if (S.view === "file") { drawTop(); drawFile(); return; }
     if (S.view === "terminal") { drawTop(); drawTerminal(); return; }

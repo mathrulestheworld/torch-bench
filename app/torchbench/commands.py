@@ -5,9 +5,11 @@ This file is the encoded form of the safety rules:
     There is no function anywhere that takes a free-form string and runs it on Torch.
   * Every command here is a cheap queue/status/file lookup: nothing that computes on the login node.
   * Every argument is validated against a strict pattern and then shell-quoted.
-  * Only read-only commands are registered so far. A command marked mutating is refused by the SSH
-    layer unless it is run through the explicit confirmation path that later milestones add
-    (push, pull, registered launchers, guarded scancel, the reviewed cleanup flow).
+  * Only read-only commands are registered here, and a command marked mutating is refused by the
+    SSH layer. The app's two copying operations, push and pull, do not go through this registry:
+    they live in sync.py, which is the only place that builds an rsync command, always previews
+    first, and copies only after the person confirms that exact preview. Later milestones add
+    registered launchers, guarded scancel and the reviewed cleanup flow.
   * File commands (list, read, download, a job's logs) take one of the person's own folders (the
     project, home, scratch, archive: config.places) plus a path *relative to it*, and run inside one
     fixed guard script that resolves the real path on Torch and refuses anything that ends up
@@ -212,6 +214,14 @@ def job_logs(root: str, job_id: str) -> RemoteCommand:
                  "Find the log files of job %s" % job_id, routine=False)
 
 
+DIR_EXISTS_SCRIPT = 'if [ -d "$1" ]; then echo exists; else echo missing; fi'
+
+
+def dir_exists(path: str) -> RemoteCommand:
+    return _make("dir_exists", _script(DIR_EXISTS_SCRIPT, _project(path)), "Check whether %s exists on Torch" % path,
+                 routine=True)
+
+
 def terminal(remote_dir: str = "") -> RemoteCommand:
     """The start-up line of the built-in terminal: a login shell, opened in the project folder when there is one
     (otherwise wherever Torch puts you, normally your home folder)."""
@@ -223,4 +233,4 @@ def terminal(remote_dir: str = "") -> RemoteCommand:
 
 def all_names() -> List[str]:
     return ["probe", "queue", "history", "fairshare", "priority", "partitions", "quota", "job_detail", "disk_usage",
-            "list_dir", "read_file", "download_file", "job_logs", "terminal"]
+            "list_dir", "read_file", "download_file", "job_logs", "dir_exists", "terminal"]

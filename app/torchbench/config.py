@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 from typing import Any, Dict, List, Tuple
 
@@ -76,12 +77,23 @@ DEFAULTS: Dict[str, Any] = {
     "history_days": 7,
     # Folders the Files page offers. Empty = your own home, scratch and archive folders on Torch.
     "browse_roots": [],
+    # Push (Mac -> Torch) leaves these out. Patterns as rsync understands them.
+    "push_excludes": [".git", "__pycache__", "*.pyc", ".pytest_cache", ".venv", "venv", ".ipynb_checkpoints",
+                      "node_modules", ".DS_Store", "results", "logs", "tmp", "output"],
+    "push_cvs_exclude": False,
+    # Pull (Torch -> Mac) copies these folders of the project and leaves model weights on Torch.
+    "pull_paths": ["results", "logs"],
+    "pull_excludes": ["*.safetensors", "*.pt", "*.pth", "*.bin", "*.ckpt", "cache/", "checkpoints/"],
 }
+
+PATTERN_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,200}$")
+PULL_PATH_RE = re.compile(r"^[A-Za-z0-9._@+=-]+(/[A-Za-z0-9._@+=-]+)*$")
 
 # What a project owner can hand to a colleague: no identity, no mode.
 SHAREABLE_KEYS = (
     "project_name", "remote_dir", "sbatch_account", "default_partition",
     "gpu_partitions", "cpu_partitions", "launchers", "help_links", "remote_host",
+    "push_excludes", "push_cvs_exclude", "pull_paths", "pull_excludes",
 )
 
 
@@ -145,6 +157,9 @@ def validate(raw: Dict[str, Any]) -> Dict[str, Any]:
     if remote_dir:
         if not REMOTE_DIR_RE.match(remote_dir) or ".." in remote_dir.split("/"):
             raise ConfigError("The project folder on Torch must be a full path such as /scratch/abc1234/my-project.")
+    if remote_dir and not own_space(netid, remote_dir):
+        raise ConfigError("The project folder on Torch must be inside your own space: /scratch/%s/..., /home/%s/... "
+                          "or /archive/%s/..." % (netid, netid, netid))
     cfg["remote_dir"] = remote_dir
 
     account = str(cfg["sbatch_account"]).strip()
@@ -157,7 +172,19 @@ def validate(raw: Dict[str, Any]) -> Dict[str, Any]:
     if not NAME_RE.match(str(cfg["default_partition"])):
         raise ConfigError("default_partition must be a partition name.")
 
-    cfg["local_dir"] = str(cfg["local_dir"]).strip()
+    local_dir = str(cfg["local_dir"]).strip()
+    if local_dir:
+        local_dir = os.path.normpath(os.path.expanduser(local_dir))
+        if not os.path.isabs(local_dir) or re.search(r"[\x00-\x1f\x7f]", local_dir):
+            raise ConfigError("The project folder on this Mac must be a full path such as ~/Desktop/my-project.")
+    cfg["local_dir"] = local_dir
+    for key in ("push_excludes", "pull_excludes"):
+        if not isinstance(cfg[key], list) or len(cfg[key]) > 200 or not all(isinstance(x, str) and PATTERN_RE.match(x) for x in cfg[key]):
+            raise ConfigError("%s must be a list of file patterns." % key)
+    if not isinstance(cfg["pull_paths"], list) or not all(isinstance(x, str) and PULL_PATH_RE.match(x) and ".." not in x.split("/")
+                                                           for x in cfg["pull_paths"]):
+        raise ConfigError("pull_paths must be a list of folder names inside the project, such as results.")
+    cfg["push_cvs_exclude"] = bool(cfg["push_cvs_exclude"])
     if not isinstance(cfg["launchers"], list):
         raise ConfigError("launchers must be a list.")
     cfg["help_links"] = _check_links(cfg["help_links"])
@@ -217,6 +244,12 @@ def shareable(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if netid and out.get("remote_dir", "").startswith("/scratch/%s/" % netid):
         out["remote_dir_template"] = out.pop("remote_dir").replace("/scratch/%s/" % netid, "/scratch/{netid}/", 1)
     return out
+
+
+def own_space(netid: str, path: str) -> bool:
+    """Is this path strictly inside the person's own scratch, home or archive on Torch?"""
+    return any(path.startswith("/%s/%s/" % (top, netid)) and len(path) > len("/%s/%s/" % (top, netid))
+               for top in ("scratch", "home", "archive"))
 
 
 def places(cfg: Dict[str, Any]) -> List[Dict[str, str]]:

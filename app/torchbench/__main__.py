@@ -108,11 +108,26 @@ def cmd_demo() -> int:
     if not fake.exists():
         print("Demo data is not installed (tests/fake_ssh.py is missing).", file=sys.stderr)
         return 1
+    import shutil
     home = Path(tempfile.mkdtemp(prefix="torchbench-demo-"))
+    # A throwaway "Mac" (with a Desktop and a small project) and a throwaway "Torch": the demo can
+    # push and pull for real between the two, and your own files are never involved.
+    pretend_mac, pretend_torch = home / "mac", home / "torch"
+    shutil.copytree(str(repo / "tests" / "fixtures" / "demo" / "fs"), str(pretend_torch))
+    project_dir = pretend_mac / "Desktop" / "demo-project"
+    (project_dir / "src").mkdir(parents=True)
+    for name in ("README.md", "configs"):
+        source = pretend_torch / "scratch" / "demo-project" / name
+        if source.is_dir():
+            shutil.copytree(str(source), str(project_dir / name))
+        else:
+            shutil.copy(str(source), str(project_dir / name))
+    (project_dir / "src" / "train.py").write_text('print("training step")  # made-up code for the demo\n')
     os.environ.update({
-        "TORCHBENCH_HOME": str(home), "TORCHBENCH_SSH": str(fake), "TORCHBENCH_DEMO": "1",
+        "TORCHBENCH_HOME": str(home / "torchbench"), "TORCHBENCH_SSH": str(fake), "TORCHBENCH_DEMO": "1",
         "TORCHBENCH_SSH_CONFIG": str(home / "ssh_config"), "FAKE_SSH_STATE": str(home / "fake_ssh_state"),
-        "FAKE_SSH_FIXTURES": str(repo / "tests" / "fixtures" / "demo"),
+        "FAKE_SSH_FIXTURES": str(repo / "tests" / "fixtures" / "demo"), "FAKE_SSH_FS": str(pretend_torch),
+        "HOME": str(pretend_mac),
     })
     from .server import serve
     print("Demo mode: made-up data, nothing is sent to Torch, your real settings are untouched.")
