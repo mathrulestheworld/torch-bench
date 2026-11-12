@@ -21,16 +21,17 @@ made-up data; see "Before you rely on it" for what still needs a real run.
   gives one, and Torch Bench's own estimate from how long your recent jobs really waited. Fair-share score,
   storage quota with a loud warning above 90%, free GPUs per partition, and the last 7 days of finished
   jobs. Each job has "Find this job's log files".
-- **Files**: a read-only browser of the project folder on Torch. Markdown, JSON, CSV and pictures are shown
-  in place (a results `SUMMARY.md` reads like a page); anything can be downloaded (up to 100 MB). Logs open
-  at the end, can follow new lines, and common failures (GPU out of memory, "Disk quota exceeded", a missing
-  Python package, time limit, out of RAM) are highlighted with a one-line explanation.
+- **Files**: a read-only browser of your own folders on Torch: home, scratch, archive, and the project
+  folder when one is set. Markdown, JSON, CSV and pictures are shown in place (a results `SUMMARY.md` reads
+  like a page); anything can be downloaded (up to 100 MB). Logs open at the end, can follow new lines, and
+  common failures (GPU out of memory, "Disk quota exceeded", a missing Python package, time limit, out of
+  RAM) are highlighted with a one-line explanation.
 - **Terminal**: a real shell on the Torch login node, inside the window, over the shared sign-in. It opens
   in the project folder. A notice reminds that it is the login node (no heavy work). What appears on screen
-  is recorded in `~/torchbench/logs/terminal/` and listed on the Commands page.
-- **Commands**: every command sent to Torch with its output, also saved under
+  is recorded in `~/torchbench/logs/terminal/` and listed in the activity log.
+- **Help**: the NYU links (kept in the settings file so they can be changed), Torch's house rules, and the
+  **activity log**: every command sent to Torch with its output, also saved under
   `~/torchbench/logs/torch_shell/` (`history.log`, `last.txt`, `commands.jsonl`).
-- **Help**: the same NYU links, kept in the settings file so they can be changed.
 
 Planned next, in order: push/pull buttons (the rest of M1); M2 launchers with a dry run, guarded cancel,
 notifications; M3 disk manager, GPU-utilisation check, "copy for Claude".
@@ -82,7 +83,7 @@ These need a Mac and a real Torch sign-in, which the build environment did not h
    than a wrong number.
 4. **Kill the shared login** (`ssh -O exit torch`) with the window open: the "Not connected" notice should
    appear within one refresh, with no hang and no prompt.
-5. **Files and Terminal on the real cluster**: open a folder, a `SUMMARY.md`, a job's `.err`, tick "Follow new
+5. **Files and Terminal on the real cluster**: open Home, Scratch and Archive, a folder, a `SUMMARY.md`, a job's `.err`, tick "Follow new
    lines" on a running job's log, download a file, and run a few commands in the Terminal (including a
    full-screen one such as `less` or `nano`, and resizing the window). The file commands need GNU `find`,
    `stat` and `realpath` on Torch, which Red Hat provides.
@@ -94,11 +95,11 @@ These need a Mac and a real Torch sign-in, which the build environment did not h
 | --- | --- |
 | No password or code is ever stored or logged. The app starts ssh and shows its prompts; the person authenticates. | `login.py` (typed text goes straight to the pty), `redact.py`, `tests/test_login.py::test_password_prompt_is_piped_and_never_kept` |
 | Read-only by default; the app has no mutating command at all. | `commands.py` is the only place commands are built; `ssh.py` refuses anything else and anything marked mutating; `policy.py` |
-| The file browser cannot leave the project folder or change anything. | Paths are relative and validated in `commands.py`; one fixed guard script resolves the real path on Torch and refuses anything outside the project, symlinks included; the scripts only call `realpath`, `find`, `stat`, `tail`, `head`, `cat`. `tests/test_files.py` |
+| The file browser stays inside your own folders and cannot change anything. | It starts from a fixed list of places (`config.places`: project, home, scratch, archive, or `browse_roots` in the settings). Paths are relative and validated in `commands.py`; one fixed guard script resolves the real path on Torch and refuses anything outside the chosen place, symlinks included; the scripts only call `realpath`, `find`, `stat`, `tail`, `head`, `cat`. `tests/test_files.py` |
 | The terminal is the one escape hatch; the app never types into it; sessions are recorded with secrets blanked. | `terminal.py` (only screen output is recorded, never keystrokes; token-shaped text and `NAME=secret` are blanked), `tests/test_terminal.py` |
 | Nothing heavy on the login node. | The registry holds only `squeue`, `sacct`, `sshare`, `sprio`, `sinfo`, `myquota`, `scontrol show job`, `du -sh` (manual button only), `hostname`, and the file reads above. Refreshes are stale-driven and stop when the window is hidden. |
 | Nothing is deleted on the cluster. | No such command exists in the registry. |
-| Every remote command and its output is logged and visible. | `cmdlog.py`, the Commands page. For file reads the command is logged in full and the contents as a byte count, so viewing a file does not copy it into the log. |
+| Every remote command and its output is logged and visible. | `cmdlog.py`, the activity log under Help. For file reads the command is logged in full and the contents as a byte count, so viewing a file does not copy it into the log. |
 | If `ssh -O check` fails, no command runs. | `ssh.py`; `tests/test_safety.py::test_no_login_means_nothing_runs` |
 | Commands can never prompt or hang. | `BatchMode=yes`, `ControlMaster=no`, closed stdin, connect and hard timeouts in `ssh.py` |
 | Only this Mac can talk to the app. | `server.py`: binds 127.0.0.1, per-launch page token, Host check, strict Content-Security-Policy |
@@ -109,7 +110,9 @@ Two deliberate choices to know about:
   `login.torch.hpc.nyu.edu` points at several machines with different host keys. That trades host-key
   checking for not being blocked by key-mismatch errors. If you would rather keep checking, edit the block.
 - If you already have your own working `Host torch` entry, Torch Bench uses it and writes nothing.
-- Downloads go through `ssh ... cat` rather than `scp`, so the same project-folder guard applies to them.
+- Downloads go through `ssh ... cat` rather than `scp`, so the same folder guard applies to them.
+- The brief scoped the file browser to the project folder; at the owner's request it now also covers the
+  person's own home, scratch and archive folders.
 - The terminal is a real shell on your own account: it can do anything you can. In `colleague` mode it is
   available too, because it acts only as the person typing.
 
@@ -129,6 +132,7 @@ hard-coded in the program.
 | `launchers` | Registered submit scripts (used from M2) |
 | `help_links` | The list on the Help page: `title`, `url`, `note` |
 | `quota_warn_percent`, `history_days` | 90, 7 |
+| `browse_roots` | Folders the Files page offers, as `label` + `path`. Empty means `/home/<netid>`, `/scratch/<netid>`, `/archive/<netid>` |
 
 An owner can save a **project file** from the Help page; a colleague loads it during setup and only has to
 type their NetID.
@@ -153,7 +157,7 @@ type their NetID.
 
     python3 -m unittest discover -s tests
 
-131 tests (6 of them wait for real recordings), all offline: the SSH wrapper, the parsers, the registry,
+135 tests (6 of them wait for real recordings), all offline: the SSH wrapper, the parsers, the registry,
 redaction, the SSH-settings writer, the guided sign-in and the terminal end to end under a real pty, the file
 browser (through the real guard script and through the imitation the macOS demo uses), the dashboard, and
 the server. They pass on Python 3.9 (what macOS ships) and 3.13.

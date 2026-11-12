@@ -27,7 +27,7 @@ class FakeTorchCase(unittest.TestCase):
 
     ENV = ("TORCHBENCH_HOME", "TORCHBENCH_SSH", "TORCHBENCH_SSH_CONFIG", "FAKE_SSH_STATE", "FAKE_SSH_FIXTURES",
            "FAKE_SSH_LOGIN", "FAKE_SSH_SLEEP", "FAKE_SSH_FAIL", "FAKE_SSH_ARGV_LOG", "TORCHBENCH_DEMO", "FAKE_SSH_NOW",
-           "FAKE_SSH_PROJECT", "FAKE_SSH_EMULATE")
+           "FAKE_SSH_FS", "FAKE_SSH_EMULATE")
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="torchbench-test-"))
@@ -41,9 +41,10 @@ class FakeTorchCase(unittest.TestCase):
             "FAKE_SSH_STATE": str(self.tmp / "state"),
             "FAKE_SSH_FIXTURES": str(DEMO),
             "FAKE_SSH_ARGV_LOG": str(self.tmp / "argv.log"),
-            "FAKE_SSH_PROJECT": str(self.tmp / "project"),
+            "FAKE_SSH_FS": str(self.tmp / "fs"),
         })
-        shutil.copytree(DEMO / "project", self.tmp / "project")      # a private copy tests may add to
+        shutil.copytree(DEMO / "fs", self.tmp / "fs")      # a private copy of the made-up cluster files
+        self.project = self.tmp / "fs" / "scratch" / "demo-project"
 
     def tearDown(self):
         for k, v in self._saved.items():

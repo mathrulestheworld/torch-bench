@@ -1,8 +1,9 @@
 """The read-only file browser and log viewer.
 
-Everything here goes through the guarded file commands in commands.py: paths are relative to the
-project folder, and Torch itself refuses anything that resolves outside it. Nothing is written,
-moved or deleted on the cluster.
+Everything here goes through the guarded file commands in commands.py. Browsing starts from one of
+the person's own folders (config.places: the project, home, scratch, archive); paths are relative to
+it, and Torch itself refuses anything that resolves outside it. Nothing is written, moved or deleted
+on the cluster.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ import re
 import time
 from typing import Any, Dict, List
 
-from . import commands
+from . import commands, config
 from .ssh import SSH, Result
 
 MAX_ENTRIES = 5000
@@ -140,34 +141,34 @@ class Files:
     def __init__(self, cfg: Dict[str, Any], ssh: SSH) -> None:
         self.cfg, self.ssh = cfg, ssh
 
-    def _root(self) -> str:
-        return self.cfg.get("remote_dir", "")
+    def places(self) -> List[Dict[str, str]]:
+        return config.places(self.cfg)
+
+    def _root(self, place: str) -> str:
+        for entry in self.places():
+            if entry["key"] == place:
+                return entry["path"]
+        raise commands.CommandRefused("That is not one of your folders: %r" % (place,))
 
     @staticmethod
     def _fail(result: Result) -> Dict[str, Any]:
         return {"ok": False, "not_connected": result.not_connected, "error": result.problem()}
 
-    def _no_project(self) -> Dict[str, Any]:
-        return {"ok": False, "no_project": True,
-                "error": "No project folder on Torch is set yet. Add it under Help, Change my details."}
-
-    def list(self, rel: str) -> Dict[str, Any]:
-        if not self._root():
-            return self._no_project()
+    def list(self, place: str, rel: str) -> Dict[str, Any]:
+        root = self._root(place)
         rel = commands.check_rel_path(rel)
-        result = self.ssh.run(commands.list_dir(self._root(), rel))
+        result = self.ssh.run(commands.list_dir(root, rel))
         if not result.ok:
             return self._fail(result)
         out = parse_listing(result.stdout)
-        out.update({"ok": True, "rel": rel, "root": self._root()})
+        out.update({"ok": True, "place": place, "rel": rel, "root": root})
         return out
 
-    def read(self, rel: str, start: int = 0, following: bool = False) -> Dict[str, Any]:
+    def read(self, place: str, rel: str, start: int = 0, following: bool = False) -> Dict[str, Any]:
         """start = -1 opens at the end (logs). following=True fetches only what was added after `start`."""
-        if not self._root():
-            return self._no_project()
+        root = self._root(place)
         rel = commands.check_rel_path(rel)
-        result = self.ssh.run(commands.read_file(self._root(), rel, start, following))
+        result = self.ssh.run(commands.read_file(root, rel, start, following))
         if not result.ok:
             return self._fail(result)
         head, _, body = result.data.partition(b"\n")
@@ -182,17 +183,16 @@ class Files:
         text = "" if binary else body.decode("utf-8", "replace")
         name = rel.rsplit("/", 1)[-1]
         return {
-            "ok": True, "rel": rel, "name": name, "size": size, "start": begun, "end": end,
+            "ok": True, "place": place, "rel": rel, "name": name, "size": size, "start": begun, "end": end,
             "more_before": begun > 0, "more_after": end < size, "binary": binary,
             "show_as": kind_of(name), "text": text,
             "problems": scan_log(text) if not binary and (kind_of(name) in ("log", "text")) else [],
         }
 
-    def download(self, rel: str) -> Dict[str, Any]:
-        if not self._root():
-            return self._no_project()
+    def download(self, place: str, rel: str) -> Dict[str, Any]:
+        root = self._root(place)
         rel = commands.check_rel_path(rel)
-        result = self.ssh.run(commands.download_file(self._root(), rel))
+        result = self.ssh.run(commands.download_file(root, rel))
         if not result.ok:
             return self._fail(result)
         name = rel.rsplit("/", 1)[-1]
@@ -201,9 +201,11 @@ class Files:
                 "content_type": IMAGE_TYPES.get(ext, "application/octet-stream")}
 
     def job_logs(self, job_id: str) -> Dict[str, Any]:
-        if not self._root():
-            return self._no_project()
-        result = self.ssh.run(commands.job_logs(self._root(), job_id))
+        if not self.cfg.get("remote_dir"):
+            return {"ok": False, "no_project": True,
+                    "error": "Job logs are looked up in the project's logs folder, and no project folder is set yet "
+                             "(Help, Change my details)."}
+        result = self.ssh.run(commands.job_logs(self.cfg["remote_dir"], job_id))
         if not result.ok:
             return self._fail(result)
         files = []
@@ -215,7 +217,7 @@ class Files:
                 modified = float(parts[1])
             except ValueError:
                 continue
-            files.append({"rel": "logs/" + parts[2], "name": parts[2], "size": int(parts[0]),
+            files.append({"place": "project", "rel": "logs/" + parts[2], "name": parts[2], "size": int(parts[0]),
                           "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(modified)), "modified_ts": modified})
         # This task's own files first (…_<task>.out), then the rest of the batch, newest first.
         exact = job_id if "_" in job_id else None

@@ -52,7 +52,7 @@ DEFAULT_HELP_LINKS: List[Dict[str, str]] = [
     {
         "title": "Ask NYU HPC for help",
         "url": "mailto:hpc@nyu.edu",
-        "note": "hpc@nyu.edu. Include what you were doing and the lines from the Commands page; "
+        "note": "hpc@nyu.edu. Include what you were doing and the lines from the activity log (under Help); "
                 "never send a password.",
     },
 ]
@@ -74,6 +74,8 @@ DEFAULTS: Dict[str, Any] = {
     "help_links": DEFAULT_HELP_LINKS,
     "quota_warn_percent": 90,
     "history_days": 7,
+    # Folders the Files page offers. Empty = your own home, scratch and archive folders on Torch.
+    "browse_roots": [],
 }
 
 # What a project owner can hand to a colleague: no identity, no mode.
@@ -108,7 +110,8 @@ def _check_links(value: Any) -> List[Dict[str, str]]:
         url = str(link.get("url", "")).strip()
         if not title or not re.match(r"^(https://|mailto:)[^\s<>\"']+$", url):
             raise ConfigError("Help link %r needs a title and an https:// or mailto: address." % (title or url))
-        out.append({"title": title[:120], "url": url[:500], "note": str(link.get("note", ""))[:400]})
+        note = str(link.get("note", ""))[:400].replace("the lines from the Commands page", "the lines from the activity log (under Help)")
+        out.append({"title": title[:120], "url": url[:500], "note": note})
     return out
 
 
@@ -159,6 +162,18 @@ def validate(raw: Dict[str, Any]) -> Dict[str, Any]:
         raise ConfigError("launchers must be a list.")
     cfg["help_links"] = _check_links(cfg["help_links"])
 
+    roots = cfg["browse_roots"]
+    if not isinstance(roots, list) or len(roots) > 12:
+        raise ConfigError("browse_roots must be a short list of folders.")
+    clean_roots = []
+    for root in roots:
+        label = str(root.get("label", "")).strip() if isinstance(root, dict) else ""
+        path = str(root.get("path", "")).strip().rstrip("/") if isinstance(root, dict) else ""
+        if not label or len(label) > 40 or not REMOTE_DIR_RE.match(path) or ".." in path.split("/"):
+            raise ConfigError("Each browse_roots entry needs a short label and a full path on Torch such as /scratch/abc1234.")
+        clean_roots.append({"label": label, "path": path, "note": str(root.get("note", ""))[:200]})
+    cfg["browse_roots"] = clean_roots
+
     try:
         warn = int(cfg["quota_warn_percent"])
         days = int(cfg["history_days"])
@@ -201,6 +216,26 @@ def shareable(cfg: Dict[str, Any]) -> Dict[str, Any]:
     netid = cfg.get("netid", "")
     if netid and out.get("remote_dir", "").startswith("/scratch/%s/" % netid):
         out["remote_dir_template"] = out.pop("remote_dir").replace("/scratch/%s/" % netid, "/scratch/{netid}/", 1)
+    return out
+
+
+def places(cfg: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The folders the Files page starts from: the project (when set), then your own folders on Torch."""
+    out: List[Dict[str, str]] = []
+    if cfg.get("remote_dir"):
+        out.append({"key": "project", "label": cfg.get("project_name") or "Project", "path": cfg["remote_dir"],
+                    "note": "The project folder."})
+    if cfg.get("browse_roots"):
+        for i, root in enumerate(cfg["browse_roots"]):
+            out.append({"key": "place%d" % (i + 1), "label": root["label"], "path": root["path"], "note": root.get("note", "")})
+        return out
+    netid = cfg["netid"]
+    out.append({"key": "home", "label": "Home", "path": "/home/%s" % netid,
+                "note": "50 GB, backed up. Settings and small files."})
+    out.append({"key": "scratch", "label": "Scratch", "path": "/scratch/%s" % netid,
+                "note": "5 TB, not backed up. Files untouched for about 60 days are deleted."})
+    out.append({"key": "archive", "label": "Archive", "path": "/archive/%s" % netid,
+                "note": "2 TB, backed up. For results worth keeping."})
     return out
 
 

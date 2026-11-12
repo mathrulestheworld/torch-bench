@@ -30,7 +30,7 @@ from .redact import Redactor
 
 KEEP_BYTES = 512 * 1024           # of screen output held for the window to (re)attach to
 MAX_WRITE = 64 * 1024
-CONSOLE_TAIL_CHARS = 60_000       # of the record shown on the Commands page when the session ends
+CONSOLE_TAIL_CHARS = 60_000       # of the record shown in the activity log when the session ends
 
 
 class TerminalSession:

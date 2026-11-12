@@ -57,6 +57,13 @@
     while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
     return (v >= 100 ? Math.round(v) : Math.round(v * 10) / 10) + " " + units[i];
   }
+  function decimalSize(n) {            // quotas are quoted in decimal units (5 TB), so match them
+    if (n == null) return "";
+    var units = ["B", "KB", "MB", "GB", "TB", "PB"], i = 0;
+    while (n >= 1000 && i < units.length - 1) { n /= 1000; i++; }
+    return (n >= 100 || i === 0 ? Math.round(n) : Math.round(n * 10) / 10) + " " + units[i];
+  }
+  function tidyLimit(text) { return (text || "").replace(/\.0(?=[A-Za-z])/, "").replace(/(\d)([A-Za-z])/, "$1 $2"); }
   function ago(seconds) { return seconds == null ? "" : seconds < 5 ? "just now" : dur(seconds) + " ago"; }
   function stop(name) { if (S.timers[name]) { clearTimeout(S.timers[name]); S.timers[name] = null; } }
   function later(name, ms, fn) { stop(name); S.timers[name] = setTimeout(fn, ms); }
@@ -73,7 +80,7 @@
     tabs.hidden = !ready; conn.hidden = !ready;
     if (!ready) return;
     Array.prototype.forEach.call(tabs.querySelectorAll("a"), function (a) {
-      var here = S.view === "file" ? "files" : S.view;
+      var here = S.view === "file" ? "files" : S.view === "commands" ? "help" : S.view;
       if (a.getAttribute("data-view") === here) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
     var connected = S.dash ? S.dash.connected : st.connected;
@@ -314,77 +321,83 @@
     var key = list + ":" + g.id, open = !!S.open[key];
     var first = g.tasks[0] || {};
     var chip = { running: "Running", waiting: "Waiting", failed: "Failed", done: "Finished", cancelled: "Cancelled", other: "Other" }[g.kind] || g.kind;
-    var meta = "Job " + g.id + (g.partition ? " on " + g.partition : "") + (g.gpus ? ", " + plural(g.gpus, "GPU", "GPUs") + (g.is_array ? " each" : "") : "");
+    var meta = "Job " + g.id + (g.partition ? " on " + g.partition : "");
     var side;
     if (list === "q") {
       if (g.is_array || g.total > 1) {
         var r = g.counts.running || 0, w = g.counts.waiting || 0;
         side = [h("div", { class: "bar", role: "img", "aria-label": r + " running, " + w + " waiting" }, h("i", { style: "width:" + (100 * r / g.total) + "%" }), h("i", { class: "w", style: "width:" + (100 * w / g.total) + "%" })),
-          countsText(g.counts), g.array_limit ? h("div", {}, "at most " + g.array_limit + " at once") : null];
+          countsText(g.counts)];
       } else if (g.kind === "running" && first.limit_s) {
         side = [h("div", { class: "bar", role: "img", "aria-label": "time used" }, h("i", { style: "width:" + Math.min(100, 100 * (first.elapsed_s || 0) / first.limit_s) + "%" })),
-          dur(first.elapsed_s) + " of " + dur(first.limit_s) + " allowed"];
-      } else if (g.waited) { side = ["waiting " + g.waited + " so far"]; }
+          dur(first.elapsed_s) + " of " + dur(first.limit_s)];
+      } else if (g.waited) { side = ["waiting " + g.waited]; }
     } else {
-      side = [g.ended ? "ended " + g.ended : "", g.longest ? h("div", {}, (g.total > 1 ? "longest task " : "ran ") + g.longest) : null];
+      side = [g.ended || ""];
+      if (g.total > 1) meta += ", " + countsText(g.counts);
     }
-    var why = g.why ? h("div", { class: "why" + (g.why.stuck ? " stuck" : "") }, h("b", {}, g.why.title + ". "), g.why.detail,
-      g.scheduler_estimate ? h("div", { class: "why-more" }, g.scheduler_estimate + " Estimates move as other jobs come and go.") : null) : null;
     var head = h("button", { class: "job-head", "aria-expanded": open ? "true" : "false", onclick: function () { S.open[key] = !open; drawJobs(true); } },
       h("span", { class: "state " + g.kind }, chip),
-      h("span", {}, h("div", { class: "job-name" }, g.name || "(no name)"), h("div", { class: "job-meta" }, meta + (list === "h" && g.total > 1 ? ". " + countsText(g.counts) : "")), why),
+      h("span", {}, h("div", { class: "job-name" }, g.name || "(no name)"), h("div", { class: "job-meta" }, meta),
+        g.why ? h("div", { class: "why" + (g.why.stuck ? " stuck" : "") }, g.why.title) : null),
       h("span", { class: "job-side" }, side),
       h("span", { class: "chev", "aria-hidden": "true" }, "›"));
-    var li = h("li", { class: "job" }, head);
+    var li = h("li", { class: "job" + (list === "h" ? " compact" : "") }, head);
     if (open) { li.setAttribute("open-row", ""); li.appendChild(jobBody(g, list)); }
     return li;
   }
 
   function jobBody(g, list) {
+    var body = h("div", { class: "job-body" });
+    if (g.why) {
+      add(body, h("p", { class: "why-detail" }, g.why.detail + (g.scheduler_estimate ? " " + g.scheduler_estimate + " Estimates move as other jobs come and go." : "")));
+    }
+    var facts = [];
+    if (g.gpus) facts.push(plural(g.gpus, "GPU", "GPUs") + (g.is_array ? " per task" : ""));
+    if (g.array_limit) facts.push("at most " + g.array_limit + " tasks at once");
+    if (list === "h" && g.longest) facts.push((g.total > 1 ? "longest task ran " : "ran ") + g.longest);
+    if (facts.length) add(body, h("p", { class: "hint" }, facts.join(", ") + "."));
     var rows = g.tasks.map(function (t) {
       return h("tr", {}, h("td", {}, t.id), h("td", { class: taskClass(t.kind) }, t.state_word + (t.note ? " " + t.note : "")),
         list === "q" ? [h("td", {}, t.kind === "running" ? t.elapsed : ""), h("td", {}, t.limit), h("td", {}, t.node || (t.task_count > 1 ? t.task_count + " tasks" : ""))]
                      : [h("td", {}, t.elapsed), h("td", {}, t.ended), h("td", {}, t.exit_code && t.exit_code !== "0:0" ? "exit " + t.exit_code : "")]);
     });
     var heads = list === "q" ? ["Job", "State", "Time used", "Time allowed", "Machine"] : ["Job", "Result", "Ran for", "Ended", ""];
-    var body = h("div", { class: "job-body" },
-      h("table", { class: "tasks" }, h("thead", {}, h("tr", {}, heads.map(function (x) { return h("th", { scope: "col" }, x); }))), h("tbody", {}, rows)),
-      g.hidden_tasks ? h("p", { class: "hint" }, "and " + g.hidden_tasks + " more") : null);
-    if (g.priority) {
-      var p = g.priority;
-      body.appendChild(h("p", { class: "prio" }, "Priority " + Math.round(p.priority) + " is made of: fair-share " + Math.round(p.fairshare) + ", time waiting " + Math.round(p.age) + ", partition " + Math.round(p.partition) + ", job size " + Math.round(p.jobsize) + ", QOS " + Math.round(p.qos) + ". Higher starts sooner."));
+    if (g.tasks.length > 1 || list === "h") {
+      add(body, h("div", { class: "tasks-scroll" }, h("table", { class: "tasks" }, h("thead", {}, h("tr", {}, heads.map(function (x) { return h("th", { scope: "col" }, x); }))), h("tbody", {}, rows))));
+      if (g.hidden_tasks) add(body, h("p", { class: "hint" }, "and " + g.hidden_tasks + " more"));
     }
     var id = (g.tasks[0] && /^\d+(_\d+)?$/.test(g.tasks[0].id)) ? g.tasks[0].id : g.id;
-    var det = S.details[id];
-    var slot = h("div", { class: "detail" });
-    if (!det) {
-      slot.appendChild(h("button", { class: "quiet small", onclick: function (e) {
-        e.target.disabled = true; e.target.textContent = "Asking Torch";
-        api("GET", "/api/job?id=" + encodeURIComponent(id)).then(function (d) { S.details[id] = d; drawJobs(true); }, function (x) { S.details[id] = { ok: false, error: x.message }; drawJobs(true); });
-      } }, "Show the scheduler's details for " + id));
-    } else if (!det.ok) {
-      slot.appendChild(h("p", { class: "hint" }, det.error));
-    } else {
-      slot.appendChild(h("dl", { class: "kv" }, det.fields.map(function (f) { return [h("dt", {}, f.key), h("dd", {}, f.value)]; })));
-      slot.appendChild(h("details", { class: "more" }, h("summary", {}, "Exactly what Torch said"), h("div", {}, h("pre", { class: "raw" }, det.raw))));
+    var det = S.details[id], logs = S.jobLogs[id];
+    var actions = h("div", { class: "row actions" });
+    if (!logs) add(actions, h("button", { class: "quiet small", onclick: function (e) {
+      e.target.disabled = true; e.target.textContent = "Looking";
+      api("GET", "/api/job/logs?id=" + encodeURIComponent(id)).then(function (r) { S.jobLogs[id] = r; drawJobs(true); }, function (x) { S.jobLogs[id] = { ok: false, error: x.message }; drawJobs(true); });
+    } }, "Log files"));
+    if (!det) add(actions, h("button", { class: "quiet small", onclick: function (e) {
+      e.target.disabled = true; e.target.textContent = "Asking Torch";
+      api("GET", "/api/job?id=" + encodeURIComponent(id)).then(function (d) { S.details[id] = d; drawJobs(true); }, function (x) { S.details[id] = { ok: false, error: x.message }; drawJobs(true); });
+    } }, "Scheduler details"));
+    if (actions.childNodes.length) add(body, actions);
+    if (logs) {
+      if (!logs.ok) add(body, h("p", { class: "hint" }, logs.error));
+      else if (!logs.files.length) add(body, h("p", { class: "hint" }, "No file in the project's logs folder has " + id.split("_")[0] + " in its name."));
+      else {
+        add(body, h("ul", { class: "loglist" }, logs.files.slice(0, 40).map(function (f) {
+          return h("li", {}, h("a", { href: "#file/" + f.place + "/" + encodeURIComponent(f.rel) }, f.name), h("span", { class: "hint" }, "  " + bytes(f.size) + ", changed " + f.modified)); })));
+        if (logs.files.length > 40) add(body, h("p", { class: "hint" }, "and " + (logs.files.length - 40) + " more, in the project's logs folder under Files"));
+      }
     }
-    body.appendChild(slot);
-    var logs = S.jobLogs[id], logSlot = h("div", { class: "detail" });
-    if (!logs) {
-      logSlot.appendChild(h("button", { class: "quiet small", onclick: function (e) {
-        e.target.disabled = true; e.target.textContent = "Looking in the project's logs folder";
-        api("GET", "/api/job/logs?id=" + encodeURIComponent(id)).then(function (r) { S.jobLogs[id] = r; drawJobs(true); }, function (x) { S.jobLogs[id] = { ok: false, error: x.message }; drawJobs(true); });
-      } }, "Find this job's log files"));
-    } else if (!logs.ok) {
-      logSlot.appendChild(h("p", { class: "hint" }, logs.error));
-    } else if (!logs.files.length) {
-      logSlot.appendChild(h("p", { class: "hint" }, "No file in the project's logs folder has " + id.split("_")[0] + " in its name."));
-    } else {
-      logSlot.appendChild(h("ul", { class: "loglist" }, logs.files.slice(0, 40).map(function (f) {
-        return h("li", {}, h("a", { href: "#file/" + encodeURIComponent(f.rel) }, f.name), h("span", { class: "hint" }, "  " + bytes(f.size) + ", changed " + f.modified)); })));
-      if (logs.files.length > 40) logSlot.appendChild(h("p", { class: "hint" }, "and " + (logs.files.length - 40) + " more, in the logs folder under Files"));
+    if (det) {
+      if (!det.ok) add(body, h("p", { class: "hint" }, det.error));
+      else {
+        if (g.priority) {
+          var p = g.priority;
+          add(body, h("p", { class: "hint" }, "Priority " + Math.round(p.priority) + ": fair-share " + Math.round(p.fairshare) + ", time waiting " + Math.round(p.age) + ", partition " + Math.round(p.partition) + ", job size " + Math.round(p.jobsize) + ". Higher starts sooner."));
+        }
+        add(body, h("dl", { class: "kv" }, det.fields.map(function (f) { return [h("dt", {}, f.key), h("dd", {}, f.value)]; })));
+      }
     }
-    body.appendChild(logSlot);
     return body;
   }
 
@@ -400,43 +413,35 @@
 
   function sideColumn(d) {
     var f = d.fairshare, q = d.quota, kids = [];
-    // standing
     kids.push(h("section", {}, h("h2", {}, "Your place in line"),
       f.value == null ? h("p", {}, d.sources.fairshare.error || "Not loaded yet.")
-        : [h("div", { class: "big" }, f.value.toFixed(2), " ", h("small", {}, "fair-share, from 0 to 1")),
-           h("div", { class: "meter", role: "img", "aria-label": "fair-share " + f.value.toFixed(2) }, h("i", { style: "width:" + Math.max(2, 100 * f.value) + "%" })),
-           h("p", { class: "strong" }, f.title), h("p", {}, f.detail), f.account ? h("p", {}, "Account " + f.account) : null]));
-    // storage
-    var storage = h("section", {}, h("h2", {}, "Storage on Torch"));
+        : [h("div", { class: "big" }, f.value.toFixed(2), " ", h("small", {}, f.title.toLowerCase())),
+           h("div", { class: "meter", role: "img", "aria-label": "fair-share " + f.value.toFixed(2) + " on a scale of 0 to 1" }, h("i", { style: "width:" + Math.max(2, 100 * f.value) + "%" })),
+           h("details", { class: "explain" }, h("summary", {}, "What this means"), h("p", {}, "Fair-share runs from 0 to 1; higher means your jobs start sooner. " + f.detail))]));
+
+    var storage = h("section", {}, h("h2", {}, "Storage"));
     if (q.parsed) {
       q.filesystems.forEach(function (fs) {
         var warn = fs.worst_pct >= q.warn_percent;
         add(storage, h("div", { class: "fs" },
-          h("div", { class: "fs-row" }, h("b", {}, fs.fs), h("span", {}, fs.space_used + (fs.space_limit ? " of " + fs.space_limit : "") + " (" + Math.round(fs.space_pct) + "%)")),
+          h("div", { class: "fs-row" }, h("b", {}, fs.fs), h("span", {}, decimalSize(fs.space_used_bytes) + (fs.space_limit ? " of " + tidyLimit(fs.space_limit) : ""))),
           h("div", { class: "meter" + (warn ? " warn" : ""), role: "img", "aria-label": fs.fs + " " + Math.round(fs.space_pct) + " percent full" }, h("i", { style: "width:" + Math.min(100, fs.space_pct) + "%" })),
-          fs.files_pct != null ? h("div", { class: "fs-row hint" }, h("span", {}, "files"), h("span", {}, fs.files_used + (fs.files_limit ? " of " + fs.files_limit : "") + " (" + Math.round(fs.files_pct) + "%)")) : null));
+          fs.files_pct != null && fs.files_pct >= 70 ? h("div", { class: "fs-row hint" }, h("span", {}, "number of files"), h("span", {}, Math.round(fs.files_pct) + "% of the limit")) : null));
       });
-      add(storage, h("p", {}, "From Torch's quota report" + (d.sources.quota.age_s != null ? ", read " + ago(d.sources.quota.age_s) : "") + ". The report can lag behind by hours."));
+      add(storage, h("p", {}, "Torch's quota report can lag by hours."));
     } else if (q.raw) {
-      add(storage, [h("p", {}, "Torch Bench could not read the quota report, so here it is as Torch printed it."), h("pre", { class: "raw" }, q.raw)]);
+      add(storage, [h("p", {}, "The quota report could not be read, so here it is as Torch printed it."), h("pre", { class: "raw" }, q.raw)]);
     } else {
       add(storage, h("p", {}, d.sources.quota.error || "Not loaded yet."));
     }
-    if (d.remote_dir) {
-      add(storage, S.disk && S.disk.ok ? h("p", { class: "strong" }, S.disk.folder + " holds " + S.disk.size + " (measured at " + S.disk.measured + ")")
-        : h("p", {}, h("button", { class: "link", onclick: function (e) { e.target.disabled = true; e.target.textContent = "Measuring (can take a minute)"; api("POST", "/api/disk").then(function (r) { S.disk = r; if (!r.ok) { e.target.textContent = r.error; } else drawJobs(true); }, function (x) { e.target.textContent = x.message; }); } }, "Measure the project folder now")));
-    }
     kids.push(storage);
-    // partitions
+
     kids.push(h("section", {}, h("h2", {}, "How busy Torch is"),
       h("table", { class: "parts" }, h("tbody", {}, d.partitions.map(function (p) {
-        var free = p.readable && p.role === "GPU" ? p.gpus_free + " of " + p.gpus_total + " GPUs free" : p.readable ? p.nodes_usable + " of " + p.nodes + " machines taking work" : "no reading";
-        var wait = p.typical_wait ? "your jobs lately started within about " + p.typical_wait : (p.wait_samples ? "too few recent jobs to estimate a wait" : "no recent jobs of yours here");
-        return h("tr", {}, h("td", {}, h("div", { class: "pname" }, p.partition), h("div", { class: "hint" }, wait)), h("td", {}, free));
+        var free = p.readable && p.role === "GPU" ? p.gpus_free + " of " + p.gpus_total + " GPUs free" : p.readable ? p.nodes_usable + " of " + p.nodes + " machines open" : "";
+        return h("tr", {}, h("td", {}, h("div", { class: "pname" }, p.partition), p.typical_wait ? h("div", { class: "hint" }, "recent wait about " + p.typical_wait) : null), h("td", {}, free));
       }))),
-      h("p", {}, "Wait times are estimates from your own jobs in the last 7 days. A free GPU does not always mean no wait.")));
-    // good to know
-    kids.push(h("section", {}, h("h2", {}, "Good to know"), h("ul", { class: "know" }, d.good_to_know.map(function (k) { return h("li", {}, h("b", {}, k.title), k.text); }))));
+      d.partitions.some(function (p) { return p.typical_wait; }) ? h("p", {}, "Waits are estimates from your own jobs this week.") : null));
     return h("aside", { class: "side", "aria-label": "Standing, storage and cluster load" }, kids);
   }
 
@@ -447,37 +452,44 @@
     var fresh = document.getElementById("tb-fresh");
     if (!forceDraw && sig === S.dashSig && fresh) { fresh.textContent = freshText(d); return; }
     S.dashSig = sig;
+    var keepScroll = document.querySelector(".finished-scroll"), scrollTop = keepScroll ? keepScroll.scrollTop : 0;
     var top = [];
     if (d.connected === false) {
       top.push(h("div", { class: "notice flame", role: "status" }, h("div", {}, h("strong", {}, "Not connected to Torch"),
-        h("p", {}, d.sources.queue.loaded ? "What you see below is the last answer Torch gave, " + ago(d.sources.queue.age_s) + ". Sign in to bring it up to date." : "Sign in to see your jobs. It takes about a minute and needs your phone for Duo.")),
+        h("p", {}, d.sources.queue.loaded ? "This is the last answer Torch gave, " + ago(d.sources.queue.age_s) + "." : "Signing in takes about a minute and needs your phone for Duo.")),
         h("button", { onclick: openSignin }, "Sign in to Torch")));
     }
     if (d.quota.warnings.length) {
       top.push(h("div", { class: "notice stop", role: "alert" }, h("div", {}, h("strong", {}, "Storage on Torch is nearly full"),
-        h("p", {}, d.quota.warnings.join(" ") + " A job that cannot save its results fails at the very end. Free up space before starting new jobs."))));
+        h("p", {}, d.quota.warnings.join(" ") + " A job that cannot save its results fails at the very end, so free up space before starting new jobs."))));
     }
     var col = h("div", {});
     if (!d.sources.queue.loaded) {
       add(col, d.connected === false ? h("h1", { class: "headline" }, "Sign in to see your jobs.") : h("h1", { class: "headline" }, "Asking Torch about your jobs"));
       if (d.sources.queue.error) add(col, h("p", { class: "subline bad" }, d.sources.queue.error));
     } else {
-      add(col, [headline(d.summary), h("p", { class: "subline" + (d.summary.failed ? " bad" : "") }, d.summary.subline),
-        h("div", { class: "fresh" }, h("span", { id: "tb-fresh" }, freshText(d)),
-          d.connected ? h("button", { class: "link", onclick: function () { loadDash(true); } }, "Refresh now") : null),
-        d.sources.queue.error ? h("p", { class: "error-text" }, "The queue could not be read: " + d.sources.queue.error) : null,
-        h("h2", { class: "section-title" }, "In the queue"),
-        d.queue.length ? h("ul", { class: "jobs" }, d.queue.map(function (g) { return jobRow(g, "q"); })) : h("p", { class: "empty" }, "No jobs are running or waiting right now."),
-        h("h2", { class: "section-title" }, "Finished in the last " + plural(d.history_days, "day", "days")),
+      var finished = d.history.length, failed = d.summary.failed, openFinished = !!S.open.finished;
+      var finishedBox = h("details", { class: "finished", open: openFinished },
+        h("summary", {}, h("span", { class: "sum-title" }, "Finished in the last " + plural(d.history_days, "day", "days")),
+          h("span", { class: "sum-count" + (failed ? " bad" : "") }, finished ? plural(finished, "job", "jobs") + (failed ? ", " + failed + " failed" : "") : "none")),
         d.sources.history.error ? h("p", { class: "error-text" }, "The history could not be read: " + d.sources.history.error) : null,
-        d.history.length ? h("ul", { class: "jobs" }, d.history.map(function (g) { return jobRow(g, "h"); })) : h("p", { class: "empty" }, d.sources.history.loaded ? "No jobs have finished in this time." : "Loading")]);
+        finished ? h("div", { class: "finished-scroll", tabindex: "0" }, h("ul", { class: "jobs" }, d.history.map(function (g) { return jobRow(g, "h"); })))
+                 : h("p", { class: "empty" }, d.sources.history.loaded ? "No jobs have finished in this time." : "Loading"));
+      finishedBox.addEventListener("toggle", function () { S.open.finished = finishedBox.open; });
+      add(col, [headline(d.summary),
+        h("div", { class: "fresh" }, h("span", { id: "tb-fresh" }, freshText(d)),
+          d.connected ? h("button", { class: "link", onclick: function () { loadDash(true); } }, "Refresh") : null),
+        d.sources.queue.error ? h("p", { class: "error-text" }, "The queue could not be read: " + d.sources.queue.error) : null,
+        d.queue.length ? h("ul", { class: "jobs queue", "aria-label": "Jobs running and waiting" }, d.queue.map(function (g) { return jobRow(g, "q"); })) : null,
+        finishedBox]);
     }
     show.apply(null, top.concat([h("div", { class: "dash" }, col, sideColumn(d))]));
+    var again = document.querySelector(".finished-scroll"); if (again) again.scrollTop = scrollTop;
   }
   function freshText(d) {
     var age = d.sources.queue.age_s; if (age == null) return "";
     age += Math.round((Date.now() - S.dashAt) / 1000);
-    return "Queue read " + ago(age) + (d.connected ? "; it refreshes every 30 seconds while this window is open." : ".");
+    return "Updated " + ago(age);
   }
 
   // ---- commands page -------------------------------------------------------------------------
@@ -494,23 +506,23 @@
   function drawCmds(folder) {
     drawTop();
     var opened = {};
-    Array.prototype.forEach.call(main.querySelectorAll(".cmd details[open]"), function (el) { opened[el.getAttribute("data-id")] = true; });
+    Array.prototype.forEach.call(main.querySelectorAll(".cmd[open]"), function (el) { opened[el.getAttribute("data-id")] = true; });
     var list = S.cmds.slice().reverse();
-    show(h("h1", { class: "page-title" }, "Commands Torch Bench ran"),
-      h("p", { class: "page-lede" }, "Every command sent to Torch, and what came back. Nothing happens on the cluster that is not listed here. The same record is kept in " + (folder || "the log folder") + "."),
+    show(h("p", { class: "back" }, h("a", { href: "#help" }, "Help"), " / Activity log"),
+      h("h1", { class: "page-title" }, "Activity log"),
+      h("p", { class: "page-lede" }, "Every command Torch Bench sent to Torch, newest first. Select one to see exactly what was sent and what came back."),
       h("div", { class: "toolbar" },
-        h("label", {}, h("input", { type: "checkbox", checked: S.showRoutine, onchange: function (e) { S.showRoutine = e.target.checked; loadCmds(true); } }), "Show routine status checks"),
-        h("button", { class: "quiet small", onclick: function (e) { copy(list.slice(0, 20).reverse().map(cmdText).join("\n\n"), e.target); } }, "Copy the last 20")),
-      list.length ? h("ul", { class: "cmds" }, list.map(function (e) {
+        h("label", {}, h("input", { type: "checkbox", checked: S.showRoutine, onchange: function (e) { S.showRoutine = e.target.checked; loadCmds(true); } }), "Include the automatic status checks"),
+        h("button", { class: "quiet small", onclick: function (e) { copy(list.slice(0, 20).reverse().map(cmdText).join("\n\n"), e.target); } }, "Copy the last 20"),
+        folder ? h("span", { class: "hint" }, "Also saved in " + folder) : null),
+      list.length ? h("div", { class: "cmds" }, list.map(function (e) {
         var bad = e.exit !== 0 && e.tag !== "started";
         var out = (e.stdout || "") + (e.stderr ? (e.stdout ? "\n" : "") + e.stderr : "");
-        return h("li", { class: "cmd" },
-          h("div", { class: "cmd-top" }, h("span", { class: "what" }, e.label || "Command"), h("span", {}, e.time),
-            h("span", { class: "tag" + (e.where === "torch" ? " torch" : "") }, e.where === "torch" ? "on Torch" : "on this Mac"),
-            h("span", { class: "tag" + (bad ? " bad" : "") }, e.tag), e.seconds ? h("span", {}, e.seconds + " s") : null),
-          h("code", {}, e.command),
-          out ? h("details", { "data-id": e.id, open: !!opened[e.id] }, h("summary", {}, "Output (" + plural(out.split("\n").length, "line", "lines") + ")"), h("pre", { class: "raw" }, out)) : null);
-      })) : h("p", { class: "empty" }, S.showRoutine ? "No commands yet." : "No commands yet, apart from routine status checks. Tick the box above to see those."));
+        return h("details", { class: "cmd", "data-id": e.id, open: !!opened[e.id] },
+          h("summary", {}, h("span", { class: "when" }, e.time.slice(11)), h("span", { class: "what" }, e.label || e.command),
+            bad ? h("span", { class: "tag bad" }, e.tag) : null, e.where === "mac" ? h("span", { class: "tag" }, "on this Mac") : null),
+          h("code", {}, e.command), out ? h("pre", { class: "raw" }, out) : h("p", { class: "hint" }, "No output."));
+      })) : h("p", { class: "empty" }, S.showRoutine ? "Nothing yet." : "Nothing yet apart from the automatic status checks."));
   }
 
   // ---- help page -----------------------------------------------------------------------------
@@ -522,14 +534,15 @@
       h("p", {}, st.about),
       h("h2", {}, "NYU pages you may need"),
       h("ul", { class: "links" }, (cfg.help_links || []).map(function (l) { return h("li", {}, h("a", { href: l.url, target: "_blank", rel: "noopener" }, l.title), h("p", {}, l.note)); })),
-      h("h2", {}, "What Torch Bench does and does not do"),
-      h("p", {}, "By itself, Torch Bench only looks: it reads the queue, your job history, your fair-share standing, GPU availability, your storage quota, and the files in the project folder. It cannot submit, cancel, change or delete anything on Torch."),
-      h("p", {}, "The Terminal page is the one exception, on purpose: it is a real shell on Torch, and what you type there you do as yourself. Torch Bench never types there, and it keeps a record of what appeared on screen."),
-      h("p", {}, "It never stores a password or a code. Signing in happens on Microsoft's page and on your phone; Torch Bench then shares that one sign-in, which you can close at any time with Disconnect."),
-      h("p", {}, "Every command it runs is listed on the Commands page."),
+      h("h2", {}, "Good to know about Torch"),
+      h("ul", { class: "know" }, (st.good_to_know || []).map(function (k) { return h("li", {}, h("b", {}, k.title), k.text); })),
+      h("h2", {}, "What Torch Bench can and cannot do"),
+      h("p", {}, "By itself it only looks: the queue, your job history, your standing, storage, and your files. It cannot submit, cancel, change or delete anything on Torch. The Terminal is the one exception, on purpose: what you type there, you do as yourself."),
+      h("p", {}, "It never stores a password or a code. You sign in on Microsoft's page and on your phone; Torch Bench shares that one sign-in until you choose Disconnect."),
+      h("p", {}, h("a", { href: "#commands" }, "See every command Torch Bench has run")),
       h("h2", {}, "Your settings"),
       h("p", {}, "Signed in as " + cfg.netid + ", as " + (cfg.mode === "owner" ? "the person who runs the project" : "a colleague following the work") + (cfg.project_name ? ", project " + cfg.project_name : "") + "."),
-      h("p", { class: "paths" }, "Settings  " + st.home + "/config.json", h("br"), "Logs      " + st.home + "/logs/torch_shell/"),
+      h("p", { class: "paths" }, "Settings  " + st.home + "/config.json", h("br"), "Records   " + st.home + "/logs/"),
       h("div", { class: "row" },
         h("button", { class: "quiet", onclick: function () { S.form = {}; S.wizard = 1; S.view = "setup"; drawSetup(); } }, "Change my details"),
         h("button", { class: "quiet", title: "For checking how Torch Bench reads the sign-in. One-time codes and anything typed are blanked out.", onclick: function (e) {
@@ -621,46 +634,61 @@
   }
 
   // ---- files page ----------------------------------------------------------------------------
-  function crumbs(rel, isFile) {
-    var parts = rel ? rel.split("/") : [], st = S.state, nav = h("nav", { class: "crumbs", "aria-label": "Folder path" });
-    add(nav, h("a", { href: "#files" }, st.config.project_name || "Project folder"));
+  function placeOf(key) { return (S.state.places || []).filter(function (p) { return p.key === key; })[0]; }
+  function splitArg() {               // "scratch/results/run 1" -> place "scratch", rel "results/run 1"
+    var cut = S.arg.indexOf("/");
+    return { place: cut < 0 ? S.arg : S.arg.slice(0, cut), rel: cut < 0 ? "" : S.arg.slice(cut + 1) };
+  }
+  function fileHref(kind, place, rel) { return "#" + kind + "/" + place + (rel ? "/" + encodeURIComponent(rel) : ""); }
+  function fileQuery(place, rel) { return "root=" + encodeURIComponent(place) + "&path=" + encodeURIComponent(rel); }
+  function crumbs(place, rel) {
+    var parts = rel ? rel.split("/") : [], pl = placeOf(place), nav = h("nav", { class: "crumbs", "aria-label": "Folder path" });
+    add(nav, h("a", { href: "#files" }, "Files"));
+    add(nav, h("span", { "aria-hidden": "true" }, " / "));
+    add(nav, parts.length ? h("a", { href: fileHref("files", place, "") }, pl ? pl.label : place) : h("b", {}, pl ? pl.label : place));
     parts.forEach(function (part, i) {
       add(nav, h("span", { "aria-hidden": "true" }, " / "));
-      var to = parts.slice(0, i + 1).join("/");
-      add(nav, i === parts.length - 1 ? h("b", {}, part) : h("a", { href: "#files/" + encodeURIComponent(to) }, part));
+      add(nav, i === parts.length - 1 ? h("b", {}, part) : h("a", { href: fileHref("files", place, parts.slice(0, i + 1).join("/")) }, part));
     });
     return nav;
   }
-  function fileProblem(r, rel) {
+  function fileProblem(r) {
     if (r.not_connected) return h("div", { class: "notice flame" }, h("div", {}, h("strong", {}, "Not connected to Torch"), h("p", {}, "Sign in to look at files.")), h("button", { onclick: openSignin }, "Sign in to Torch"));
-    return h("div", { class: "notice flame" }, h("div", {}, h("strong", {}, r.no_project ? "No project folder yet" : "That could not be opened"), h("p", {}, r.error)),
-      rel ? h("a", { class: "button quiet", href: "#files" }, "Back to the project folder") : null);
+    return h("div", { class: "notice flame" }, h("div", {}, h("strong", {}, "That could not be opened"), h("p", {}, r.error)), h("a", { class: "button quiet", href: "#files" }, "Back to Files"));
+  }
+  function drawPlaces() {
+    var places = S.state.places || [];
+    show(h("h1", { class: "page-title" }, "Files"),
+      h("p", { class: "page-lede" }, "Your folders on Torch. You can look and download; nothing here can change a file."),
+      h("table", { class: "grid files places" }, h("tbody", {}, places.map(function (p) {
+        return h("tr", {}, h("td", {}, h("a", { class: "dir", href: fileHref("files", p.key, "") }, p.label)), h("td", { class: "path" }, p.path), h("td", {}, p.note));
+      }))));
   }
   function drawFiles() {
-    var rel = S.arg, gen = ++S.fileGen;
+    if (!S.arg) { stop("follow"); S.fileGen++; drawPlaces(); return; }
+    var at = splitArg(), place = at.place, rel = at.rel, gen = ++S.fileGen;
     stop("follow");
-    show(h("h1", { class: "page-title" }, "Files"), crumbs(rel), h("p", { class: "loading" }, "Asking Torch for this folder"));
-    api("GET", "/api/files/list?path=" + encodeURIComponent(rel)).then(function (r) {
+    if (!placeOf(place)) { show(h("h1", { class: "page-title" }, "Files"), fileProblem({ error: "That is not one of your folders." })); return; }
+    show(crumbs(place, rel), h("p", { class: "loading" }, "Asking Torch for this folder"));
+    api("GET", "/api/files/list?" + fileQuery(place, rel)).then(function (r) {
       if (gen !== S.fileGen || S.view !== "files") return;
-      if (!r.ok) { show(h("h1", { class: "page-title" }, "Files"), crumbs(rel), fileProblem(r, rel)); return; }
+      if (!r.ok) { show(crumbs(place, rel), fileProblem(r)); return; }
       var rows = r.entries.map(function (e) {
         var to = (rel ? rel + "/" : "") + e.name, folder = e.kind === "folder" || (e.kind === "link" && e.link_to === "folder");
-        return h("tr", {}, h("td", {}, h("a", { class: folder ? "dir" : "", href: (folder ? "#files/" : "#file/") + encodeURIComponent(to) }, e.name + (folder ? "/" : "")),
+        return h("tr", {}, h("td", {}, h("a", { class: folder ? "dir" : "", href: fileHref(folder ? "files" : "file", place, to) }, e.name + (folder ? "/" : "")),
             e.kind === "link" ? h("span", { class: "hint" }, e.link_to === "missing" ? "  broken link" : "  link") : null),
           h("td", { class: "num" }, e.size != null ? bytes(e.size) : ""), h("td", {}, e.modified));
       });
-      show(h("h1", { class: "page-title" }, "Files"),
-        h("p", { class: "page-lede" }, "The project folder on Torch (" + r.root + "). You can look and download here; nothing in this window can change, move or delete a file."),
-        crumbs(rel),
+      show(crumbs(place, rel),
         r.entries.length ? h("table", { class: "grid files" }, h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "Name"), h("th", { scope: "col", class: "num" }, "Size"), h("th", { scope: "col" }, "Changed"))), h("tbody", {}, rows))
                          : h("p", { class: "empty" }, "This folder is empty."),
         r.truncated ? h("p", { class: "hint" }, "Only the first 5,000 entries are shown.") : null);
-    }, function (e) { if (gen === S.fileGen) show(h("h1", { class: "page-title" }, "Files"), crumbs(rel), fileProblem({ error: e.message }, rel)); });
+    }, function (e) { if (gen === S.fileGen) show(crumbs(place, rel), fileProblem({ error: e.message })); });
   }
 
-  function download(rel, button) {
+  function download(place, rel, button) {
     var was = button.textContent; button.disabled = true; button.textContent = "Downloading";
-    fetch("/api/files/download?path=" + encodeURIComponent(rel), { headers: { "X-Torchbench-Token": TOKEN } }).then(function (r) {
+    fetch("/api/files/download?" + fileQuery(place, rel), { headers: { "X-Torchbench-Token": TOKEN } }).then(function (r) {
       if (!r.ok) return r.json().then(function (j) { throw new Error(j.error || "The download failed."); });
       return r.blob();
     }).then(function (blob) {
@@ -671,30 +699,30 @@
   }
 
   function drawFile() {
-    var rel = S.arg, gen = ++S.fileGen, name = rel.split("/").pop(), parent = rel.split("/").slice(0, -1).join("/");
+    var at = splitArg(), place = at.place, rel = at.rel, gen = ++S.fileGen, name = rel.split("/").pop();
     var isLog = /\.(out|err|log)$/i.test(name), isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(name);
     stop("follow");
-    var head = [h("h1", { class: "page-title" }, name), crumbs(rel, true)];
+    var head = [crumbs(place, rel)];
     show.apply(null, head.concat([h("p", { class: "loading" }, "Asking Torch for this file")]));
-    var dl = h("button", { class: "quiet small", onclick: function (e) { download(rel, e.target); } }, "Download");
+    var dl = h("button", { class: "quiet small", onclick: function (e) { download(place, rel, e.target); } }, "Download");
 
     if (isImage) {
-      fetch("/api/files/download?path=" + encodeURIComponent(rel), { headers: { "X-Torchbench-Token": TOKEN } }).then(function (r) {
+      fetch("/api/files/download?" + fileQuery(place, rel), { headers: { "X-Torchbench-Token": TOKEN } }).then(function (r) {
         if (!r.ok) return r.json().then(function (j) { throw new Error(j.error || "The picture could not be loaded."); });
         return r.blob();
       }).then(function (blob) {
         if (gen !== S.fileGen) return;
         show.apply(null, head.concat([h("div", { class: "toolbar" }, h("span", { class: "hint" }, bytes(blob.size)), dl), h("img", { class: "picture", alt: name, src: URL.createObjectURL(blob) })]));
-      }).catch(function (e) { if (gen === S.fileGen) show.apply(null, head.concat([fileProblem({ error: e.message }, rel)])); });
+      }).catch(function (e) { if (gen === S.fileGen) show.apply(null, head.concat([fileProblem({ error: e.message })])); });
       return;
     }
 
     function load(fromEnd) {
-      api("GET", "/api/files/read?path=" + encodeURIComponent(rel) + "&start=" + (fromEnd ? -1 : 0)).then(function (r) {
+      api("GET", "/api/files/read?" + fileQuery(place, rel) + "&start=" + (fromEnd ? -1 : 0)).then(function (r) {
         if (gen !== S.fileGen || S.view !== "file") return;
-        if (!r.ok) { show.apply(null, head.concat([fileProblem(r, rel)])); return; }
+        if (!r.ok) { show.apply(null, head.concat([fileProblem(r)])); return; }
         paint(r, fromEnd);
-      }, function (e) { if (gen === S.fileGen) show.apply(null, head.concat([fileProblem({ error: e.message }, rel)])); });
+      }, function (e) { if (gen === S.fileGen) show.apply(null, head.concat([fileProblem({ error: e.message })])); });
     }
 
     function paint(r, fromEnd) {
@@ -716,13 +744,12 @@
           }
           holder.replaceChildren(el);
         };
-        add(bar, h("button", { class: "quiet small", onclick: function (e) { pretty = !pretty; e.target.textContent = pretty ? "Show the plain text" : "Show it formatted"; draw(); } }, "Show the plain text"));
+        add(bar, h("button", { class: "quiet small", onclick: function (e) { pretty = !pretty; e.target.textContent = pretty ? "Plain text" : "Formatted"; draw(); } }, "Plain text"));
         draw(); body = holder;
         if (r.more_after) note = h("p", { class: "hint" }, "Only the first " + bytes(r.end) + " of " + bytes(r.size) + " is shown. Download the file for the rest.");
       } else {
-        var pre = h("pre", { class: "raw log", tabindex: "0" }), flagged = {}, lineNo = 0;
-        r.problems.forEach(function (p) { flagged[p.line] = p; });
-        var append = function (text, problems, offset) {
+        var pre = h("pre", { class: "raw log", tabindex: "0" });
+        var append = function (text, problems) {
           var map = {}; (problems || []).forEach(function (p) { map[p.line] = p; });
           var lines = text.split("\n"); if (lines[lines.length - 1] === "") lines.pop();
           lines.forEach(function (ln, k) { var p = map[k + 1]; pre.appendChild(h("span", { class: p ? "ln bad" : "ln", title: p ? p.title + ". " + p.explanation : null }, ln + "\n")); });
@@ -739,7 +766,7 @@
         var tick = function () {
           if (gen !== S.fileGen || S.view !== "file" || !follow.checked) return;
           if (document.hidden) { later("follow", 3000, tick); return; }
-          api("GET", "/api/files/read?path=" + encodeURIComponent(rel) + "&start=" + end + "&follow=1").then(function (n) {
+          api("GET", "/api/files/read?" + fileQuery(place, rel) + "&start=" + end + "&follow=1").then(function (n) {
             if (gen !== S.fileGen || !n.ok) { if (n && !n.ok) follow.checked = false; return; }
             if (n.start !== end) { load(true); return; }          // the file was replaced: start again from its end
             if (n.text) {
@@ -754,7 +781,7 @@
         };
         follow.addEventListener("change", function () { if (follow.checked) { pre.scrollTop = pre.scrollHeight; tick(); } else stop("follow"); });
         add(bar, [h("label", { for: "tb-follow" }, follow, "Follow new lines"),
-          h("button", { class: "quiet small", onclick: function () { stop("follow"); load(!fromEnd); } }, fromEnd ? "Show from the top" : "Show the end")]);
+          h("button", { class: "quiet small", onclick: function () { stop("follow"); load(!fromEnd); } }, fromEnd ? "From the top" : "Jump to the end")]);
         body = h("div", {}, summary, pre);
         if (fromEnd && r.more_before) note = h("p", { class: "hint" }, "Showing the last " + bytes(r.end - r.start) + " of " + bytes(r.size) + ".");
         if (!fromEnd && r.more_after) note = h("p", { class: "hint" }, "Showing the first " + bytes(r.end) + " of " + bytes(r.size) + ".");
@@ -769,10 +796,8 @@
   function drawTerminal() {
     var gen = ++S.termGen, box = h("div", { class: "term-box" }), status = h("p", { class: "hint", role: "status" });
     var closeBtn = h("button", { class: "quiet small", onclick: function () { api("POST", "/api/term/close").catch(function () {}); } }, "End this shell");
-    show(h("h1", { class: "page-title" }, "Terminal"),
-      h("div", { class: "notice flame slim" }, h("div", {}, h("p", {}, h("b", {}, "This shell runs on Torch's login node, as you. "),
-        "Use it for quick things: looking at files, checking jobs. Anything heavy belongs in a job, and NYU stops heavy work here. What appears on screen is recorded on your Mac and listed on the Commands page; Torch Bench never types here itself."))),
-      h("div", { class: "toolbar" }, status, closeBtn), box);
+    show(h("div", { class: "term-head" }, h("p", { class: "hint" }, "A shell on Torch's login node, as you. Quick commands only; heavy work belongs in a job. The session is recorded on your Mac."),
+        h("div", { class: "toolbar" }, status, closeBtn)), box);
     if (typeof Terminal === "undefined") { status.textContent = "The terminal part of Torch Bench did not load. Reload the page."; return; }
     var term = new Terminal({ fontFamily: '"SF Mono", Menlo, Consolas, "Liberation Mono", monospace', fontSize: 13, cursorBlink: true, scrollback: 8000,
       theme: { background: "#1F1433", foreground: "#EDE7F6", cursor: "#F6A53B", selectionBackground: "#6B4A8E" } });
@@ -809,7 +834,7 @@
       status.textContent = "Opening a shell on Torch";
       api("POST", "/api/term/start", { rows: term.rows, cols: term.cols }).then(function (r) {
         if (!alive()) return;
-        status.textContent = r.reattached ? "Back in the shell you left open." : "Connected. Type exit to end the shell.";
+        status.textContent = r.reattached ? "Back in the shell you left open." : "";
         if (r.reattached) api("POST", "/api/term/resize", { rows: term.rows, cols: term.cols }).catch(function () {});
         term.focus(); read(0);
       }, function (e) {

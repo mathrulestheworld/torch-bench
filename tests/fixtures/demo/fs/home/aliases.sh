@@ -1,0 +1,1 @@
+alias sq="squeue --me"

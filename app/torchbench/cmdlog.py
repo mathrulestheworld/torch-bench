@@ -3,7 +3,7 @@
 Mirrors the research repo's scripts/torch.sh:
   logs/torch_shell/history.log    one line per command  (time  [exit N]  command)
   logs/torch_shell/last.txt       the most recent command and its full output
-plus logs/torch_shell/commands.jsonl with full outputs, which the Commands page reads.
+plus logs/torch_shell/commands.jsonl with full outputs, which the activity log reads.
 """
 from __future__ import annotations
 

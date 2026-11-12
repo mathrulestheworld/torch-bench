@@ -8,9 +8,10 @@ This file is the encoded form of the safety rules:
   * Only read-only commands are registered so far. A command marked mutating is refused by the SSH
     layer unless it is run through the explicit confirmation path that later milestones add
     (push, pull, registered launchers, guarded scancel, the reviewed cleanup flow).
-  * File commands (list, read, download, a job's logs) take a path *relative to the project folder*
-    and run inside one fixed guard script that resolves the real path on Torch and refuses anything
-    that ends up outside the project folder, symlinks included.
+  * File commands (list, read, download, a job's logs) take one of the person's own folders (the
+    project, home, scratch, archive: config.places) plus a path *relative to it*, and run inside one
+    fixed guard script that resolves the real path on Torch and refuses anything that ends up
+    outside that folder, symlinks included.
   * The built-in terminal is the one deliberate escape hatch. Its start-up line is built here too;
     what the person types afterwards is their own.
 """
@@ -48,8 +49,8 @@ class CommandRefused(ValueError):
 class RemoteCommand:
     name: str            # registry name, e.g. "queue"
     text: str            # the exact text run on Torch
-    label: str           # plain-language description shown in the Commands page
-    routine: bool        # a periodic status check (hidden by default in the Commands page)
+    label: str           # plain-language description shown in the activity log
+    routine: bool        # a periodic status check (hidden by default in the activity log)
     mutating: bool       # changes something on the cluster
     timeout: int         # seconds
     key: object = None   # proof that the registry built it
@@ -129,10 +130,10 @@ def disk_usage(remote_dir: str) -> RemoteCommand:
 
 
 # -- files: read-only, inside the project folder -------------------------------------------------
-# One guard, shared by every file command. $1 is the project folder, $2 the requested path inside it.
-# realpath follows symlinks, so a link that points outside the project is refused too.
+# One guard, shared by every file command. $1 is the starting folder, $2 the requested path inside it.
+# realpath follows symlinks, so a link that points outside the folder is refused too.
 GUARD = ('r=$(realpath -e -- "$1" 2>/dev/null) && p=$(realpath -e -- "$2" 2>/dev/null) || { echo "No such file or folder." >&2; exit 4; }; '
-         'case "$p" in "$r"|"$r"/*) ;; *) echo "That is outside the project folder." >&2; exit 3;; esac; ')
+         'case "$p" in "$r"|"$r"/*) ;; *) echo "That is outside this folder." >&2; exit 3;; esac; ')
 LIST_SCRIPT = (GUARD + '[ -d "$p" ] || { echo "That is not a folder." >&2; exit 5; }; '
                'find -P "$p" -mindepth 1 -maxdepth 1 -printf "%y\\t%s\\t%T@\\t%Y\\t%f\\n" | head -n 5001')
 # Prints "<size> <start>" then the file from byte <start>. $3 = start (-1: the last $4 bytes), $5 = most bytes sent.
@@ -154,19 +155,19 @@ REL_PATH_BAD = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def check_rel_path(rel: str) -> str:
-    """A path relative to the project folder: '' (the folder itself) or 'results/run1/SUMMARY.md'."""
+    """A path relative to a starting folder: '' (the folder itself) or 'results/run1/SUMMARY.md'."""
     if not isinstance(rel, str) or len(rel) > 1024 or REL_PATH_BAD.search(rel) or rel.startswith("/"):
-        raise CommandRefused("Not a valid path inside the project folder: %r" % (rel,))
+        raise CommandRefused("Not a valid path inside the folder: %r" % (rel,))
     parts = [part for part in rel.split("/") if part != ""]
     if any(part in (".", "..") for part in parts):
-        raise CommandRefused("Not a valid path inside the project folder: %r" % (rel,))
+        raise CommandRefused("Not a valid path inside the folder: %r" % (rel,))
     return "/".join(parts)
 
 
 def _project(root: str) -> str:
-    _need(REMOTE_DIR_RE, root, "project folder on Torch")
+    _need(REMOTE_DIR_RE, root, "folder on Torch")
     if ".." in root.split("/"):
-        raise CommandRefused("Not a valid project folder on Torch: %r" % root)
+        raise CommandRefused("Not a valid folder on Torch: %r" % root)
     return root
 
 
@@ -182,7 +183,7 @@ def _target(root: str, rel: str) -> str:
 def list_dir(root: str, rel: str) -> RemoteCommand:
     root = _project(root)
     return _make("list_dir", _script(LIST_SCRIPT, root, _target(root, rel)),
-                 "List the folder %s" % (check_rel_path(rel) or "(project folder)"), routine=False)
+                 "List the folder %s" % _target(root, rel), routine=False)
 
 
 def read_file(root: str, rel: str, start: int = 0, following: bool = False) -> RemoteCommand:
@@ -193,7 +194,7 @@ def read_file(root: str, rel: str, start: int = 0, following: bool = False) -> R
     cap = FOLLOW_BYTES if following else (TAIL_BYTES if start < 0 else MAX_VIEW_BYTES)
     where = "the end of " if start < 0 else ("new lines of " if following else "")
     return _make("read_file", _script(READ_SCRIPT, root, _target(root, rel), start, TAIL_BYTES, cap),
-                 "Read %s%s" % (where, check_rel_path(rel)), routine=following, binary=True, quiet_output=True)
+                 "Read %s%s" % (where, _target(root, rel)), routine=following, binary=True, quiet_output=True)
 
 
 def download_file(root: str, rel: str) -> RemoteCommand:
@@ -201,7 +202,7 @@ def download_file(root: str, rel: str) -> RemoteCommand:
     if not check_rel_path(rel):
         raise CommandRefused("Choose a file to download.")
     return _make("download_file", _script(DOWNLOAD_SCRIPT, root, _target(root, rel), MAX_DOWNLOAD_BYTES),
-                 "Download %s" % check_rel_path(rel), routine=False, timeout=300, binary=True, quiet_output=True)
+                 "Download %s" % _target(root, rel), routine=False, timeout=300, binary=True, quiet_output=True)
 
 
 def job_logs(root: str, job_id: str) -> RemoteCommand:
@@ -212,7 +213,8 @@ def job_logs(root: str, job_id: str) -> RemoteCommand:
 
 
 def terminal(remote_dir: str = "") -> RemoteCommand:
-    """The start-up line of the built-in terminal: a login shell, opened in the project folder when there is one."""
+    """The start-up line of the built-in terminal: a login shell, opened in the project folder when there is one
+    (otherwise wherever Torch puts you, normally your home folder)."""
     text = ""
     if remote_dir:
         text = "cd %s ; exec $SHELL -l" % shlex.quote(_project(remote_dir))

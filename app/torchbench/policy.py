@@ -24,6 +24,24 @@ def allowed(mode: str, action: str) -> bool:
     return action in AVAILABLE_NOW and mode in ACTIONS.get(action, ())
 
 
+def _size(n: Optional[float]) -> str:
+    """4613200000000 -> '4.6 TB' (decimal units, like the quota itself)."""
+    if n is None:
+        return "an unknown amount"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    i = 0
+    while n >= 1000 and i < len(units) - 1:
+        n /= 1000.0
+        i += 1
+    return ("%d %s" % (round(n), units[i])) if n >= 100 or i == 0 else ("%.1f %s" % (n, units[i]))
+
+
+def _limit(text: str) -> str:
+    """'5.0TB' -> '5 TB'"""
+    import re
+    return re.sub(r"(\d)([A-Za-z])", r"\1 \2", re.sub(r"\.0(?=[A-Za-z])", "", text or ""))
+
+
 def quota_blocks_submit(quota: Optional[Dict[str, Any]], warn_percent: int) -> List[str]:
     """Reasons a submit must be blocked because storage is nearly full. Empty list = fine.
 
@@ -36,8 +54,8 @@ def quota_blocks_submit(quota: Optional[Dict[str, Any]], warn_percent: int) -> L
         if fs["fs"] not in ("/scratch", "/home"):
             continue
         if fs["space_pct"] >= warn_percent:
-            problems.append("%s is %.0f%% full (%s of %s)." % (fs["fs"], fs["space_pct"], fs["space_used"],
-                                                               fs["space_limit"] or "its limit"))
+            problems.append("%s is %.0f%% full (%s of %s)." % (fs["fs"], fs["space_pct"], _size(fs.get("space_used_bytes")),
+                                                               _limit(fs["space_limit"]) or "its limit"))
         if fs.get("files_pct") is not None and fs["files_pct"] >= warn_percent:
             problems.append("%s holds %.0f%% of the files it may hold." % (fs["fs"], fs["files_pct"]))
     return problems

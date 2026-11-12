@@ -7,7 +7,7 @@ It imitates just what Torch Bench relies on:
   ssh -o BatchMode=yes ... <alias> <command>
                                       answer from $FAKE_SSH_FIXTURES/<first word>.txt, only if a login is open.
                                       The guarded file commands (`bash -c <script> torchbench <root> <path> ...`) are
-                                      really run, against the made-up project in $FAKE_SSH_PROJECT, when GNU find
+                                      really run, against the made-up filesystem in $FAKE_SSH_FS, when GNU find
                                       is available (Linux); otherwise (macOS demo) they are imitated in Python.
   ssh -tt ... <alias> [command]       the built-in terminal: a local shell in the made-up project folder
   ssh <alias> echo MARKER             an interactive sign-in, scripted by $FAKE_SSH_LOGIN:
@@ -26,7 +26,9 @@ FIXTURES = os.environ.get("FAKE_SSH_FIXTURES", os.path.join(os.path.dirname(os.p
 MASTER = os.path.join(STATE, "master")
 UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 WANT_TTY = False
-PROJECT = os.environ.get("FAKE_SSH_PROJECT", os.path.join(FIXTURES, "project"))
+# A made-up cluster filesystem: fs/home, fs/scratch, fs/archive stand in for /home/<netid>, /scratch/<netid>, ...
+FS = os.environ.get("FAKE_SSH_FS", os.path.join(FIXTURES, "fs"))
+PROJECT = os.path.join(FS, "scratch", "demo-project")
 
 
 def now():
@@ -164,10 +166,11 @@ def gnu_tools():
         return False
 
 
-def map_path(path, root):
-    """The pretend cluster path -> the made-up project on this machine."""
-    if path == root or path.startswith(root + "/"):
-        return PROJECT + path[len(root):]
+def map_path(path):
+    """A pretend cluster path -> the made-up filesystem here: /scratch/<netid>/x -> fs/scratch/x."""
+    parts = [x for x in path.split("/") if x]
+    if path.startswith("/") and len(parts) >= 2 and parts[0] in ("home", "scratch", "archive"):
+        return os.path.join(FS, parts[0], *parts[2:])
     return path
 
 
@@ -199,7 +202,7 @@ def emulate(script, args):
         return fail(4, "No such file or folder.")
     p = os.path.realpath(args[1])
     if not (p == r or p.startswith(r + os.sep)):
-        return fail(3, "That is outside the project folder.")
+        return fail(3, "That is outside this folder.")
     if "-mindepth 1" in script:
         if not os.path.isdir(p):
             return fail(5, "That is not a folder.")
@@ -238,8 +241,7 @@ def run_script(command_text):
     if len(parts) < 5 or parts[:2] != ["bash", "-c"]:
         sys.stderr.write("bash: bad invocation\n")
         return 2
-    script, root, args = parts[2], parts[4], parts[4:]
-    args = [map_path(a, root) for a in args]
+    script, args = parts[2], [map_path(a) for a in parts[4:]]
     sys.stdout.flush()
     if gnu_tools():
         return subprocess.run(["bash", "-c", script, "torchbench"] + args).returncode

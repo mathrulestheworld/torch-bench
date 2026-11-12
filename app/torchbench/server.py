@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__, commands, config, paths, sshconf
 from .cmdlog import CommandLog
-from .dashboard import Dashboard
+from .dashboard import GOOD_TO_KNOW, Dashboard
 from .files import Files
 from .login import LoginSession
 from .redact import Redactor
@@ -99,6 +99,8 @@ class App:
             "config": self.cfg or config.defaults(),
             "ssh_ready": ssh_ok, "connected": connected,
             "about": TORCH_IN_TWO_SENTENCES,
+            "places": config.places(self.cfg) if self.cfg else [],
+            "good_to_know": GOOD_TO_KNOW,
             "home": str(paths.home()),
         }
 
@@ -106,7 +108,7 @@ class App:
         raw = dict(self.cfg) if self.cfg else config.defaults()
         for key in ("netid", "mode", "project_name", "remote_dir", "sbatch_account", "default_partition",
                     "local_dir", "gpu_partitions", "cpu_partitions", "help_links", "launchers", "remote_host",
-                    "quota_warn_percent", "history_days"):
+                    "quota_warn_percent", "history_days", "browse_roots"):
             if key in body:
                 raw[key] = body[key]
         netid = str(raw.get("netid", "")).strip().lower()
@@ -348,7 +350,7 @@ class Handler(BaseHTTPRequestHandler):
         if route == ("GET", "/api/files/list"):
             app.need_config()
             assert app.files is not None
-            return 200, app.files.list(q("path"))
+            return 200, app.files.list(q("root"), q("path"))
         if route == ("GET", "/api/files/read"):
             app.need_config()
             assert app.files is not None
@@ -356,11 +358,11 @@ class Handler(BaseHTTPRequestHandler):
                 start = int(q("start", "0"))
             except ValueError:
                 raise ApiError("Not a valid position in the file.")
-            return 200, app.files.read(q("path"), start, following=q("follow") == "1")
+            return 200, app.files.read(q("root"), q("path"), start, following=q("follow") == "1")
         if route == ("GET", "/api/files/download"):
             app.need_config()
             assert app.files is not None
-            got = app.files.download(q("path"))
+            got = app.files.download(q("root"), q("path"))
             if not got["ok"]:
                 return (409 if got.get("not_connected") else 400), got
             return 200, Raw(got["data"], got["content_type"], got["name"])

@@ -55,7 +55,8 @@ class Terminal(FakeTorchCase):
         self.wait_for(lambda: t.closed, what="terminal to close")
         self.assertEqual(t.exit_code, 0)
         self.assertFalse(t.write("echo late\n"))
-        record = open(t.record_path, encoding="utf-8").read()
+        from pathlib import Path
+        record = Path(t.record_path).read_text(encoding="utf-8")
         self.assertIn("torch42bench", record)               # what appeared on screen is recorded ...
         self.assertNotIn("hf_abcdefghijklmnop", record)     # ... with token-shaped text blanked
         self.assertEqual(oct(os.stat(t.record_path).st_mode & 0o777), "0o600")
@@ -121,17 +122,20 @@ class TerminalOverHttp(unittest.TestCase):
 
             # files over HTTP
             case.open_login()
-            status, listing = case.call("GET", "/api/files/list?path=results/demo_v1/analyze")
+            status, listing = case.call("GET", "/api/files/list?root=project&path=results/demo_v1/analyze")
             self.assertTrue(listing["ok"], listing)
-            status, doc = case.call("GET", "/api/files/read?path=results/demo_v1/analyze/SUMMARY.md")
+            status, doc = case.call("GET", "/api/files/read?root=project&path=results/demo_v1/analyze/SUMMARY.md")
             self.assertTrue(doc["text"].startswith("# Demo run"))
-            self.assertEqual(case.call("GET", "/api/files/read?path=../x")[0], 400)
-            self.assertEqual(case.call("GET", "/api/files/read?path=README.md&start=abc")[0], 400)
+            self.assertEqual(case.call("GET", "/api/files/read?root=project&path=../x")[0], 400)
+            self.assertEqual(case.call("GET", "/api/files/read?root=project&path=README.md&start=abc")[0], 400)
             status, logs = case.call("GET", "/api/job/logs?id=22590102_2")
             self.assertEqual(len(logs["files"]), 3)
             self.assertEqual(case.call("GET", "/api/job/logs?id=1;id")[0], 400)
-            self.assertEqual(case.call("GET", "/api/files/download?path=nope.bin")[0], 400)
-            self.assertEqual(case.call("GET", "/api/files/list?path=", token=False)[0], 403)
+            self.assertEqual(case.call("GET", "/api/files/download?root=home&path=nope.bin")[0], 400)
+            self.assertEqual(case.call("GET", "/api/files/list?root=home&path=", token=False)[0], 403)
+            self.assertTrue(case.call("GET", "/api/files/list?root=scratch&path=")[1]["ok"])
+            self.assertEqual(case.call("GET", "/api/files/list?root=elsewhere&path=")[0], 400)
+            self.assertEqual([p["key"] for p in case.call("GET", "/api/state")[1]["places"]], ["project", "home", "scratch", "archive"])
             self.assertEqual(case.call("GET", "/static/vendor/xterm.js", token=False)[0], 200)
             self.assertEqual(case.call("GET", "/static/vendor/../app.js", token=False)[0], 404)
         finally:

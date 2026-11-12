@@ -53,20 +53,19 @@ class Browser(FakeTorchCase):
         os.environ["FAKE_SSH_EMULATE"] = self.EMULATE
         self.log = CommandLog()
         self.files = files.Files(self.config(), SSH("torch", self.log))
-        self.project = self.tmp / "project"
         self.open_login()
 
     def test_list_project_folder(self):
-        top = self.files.list("")
+        top = self.files.list("project", "")
         self.assertTrue(top["ok"], top)
         self.assertEqual([(e["name"], e["kind"]) for e in top["entries"]],
                          [("configs", "folder"), ("logs", "folder"), ("results", "folder"), ("README.md", "file")])
-        sub = self.files.list("results/demo_v1/analyze")
+        sub = self.files.list("project", "results/demo_v1/analyze")
         self.assertEqual(sorted(e["name"] for e in sub["entries"]), ["SUMMARY.md", "loss.png", "metrics.csv", "summary.json"])
         self.assertEqual({e["name"]: e["show_as"] for e in sub["entries"]}["SUMMARY.md"], "markdown")
 
     def test_read_summary_from_the_top(self):
-        got = self.files.read("results/demo_v1/analyze/SUMMARY.md")
+        got = self.files.read("project", "results/demo_v1/analyze/SUMMARY.md")
         self.assertTrue(got["ok"], got)
         self.assertTrue(got["text"].startswith("# Demo run: summary"))
         self.assertEqual((got["show_as"], got["start"], got["more_after"], got["binary"]), ("markdown", 0, False, False))
@@ -74,16 +73,16 @@ class Browser(FakeTorchCase):
 
     def test_log_opens_at_the_end_and_follows(self):
         rel = "logs/finetune-batch_22601412_0.out"
-        first = self.files.read(rel, start=-1)
+        first = self.files.read("project", rel, start=-1)
         self.assertTrue(first["ok"], first)
         self.assertIn("step 1200/2000", first["text"])
         self.assertEqual(first["end"], first["size"])
         with open(self.project / rel, "a") as f:
             f.write("[2026-11-11 18:11:30] step 1600/2000 loss 0.502 ✓\n")
-        more = self.files.read(rel, start=first["end"], following=True)
+        more = self.files.read("project", rel, start=first["end"], following=True)
         self.assertEqual(more["text"], "[2026-11-11 18:11:30] step 1600/2000 loss 0.502 ✓\n")   # only what was added
         self.assertEqual(more["start"], first["end"])
-        nothing = self.files.read(rel, start=more["end"], following=True)
+        nothing = self.files.read("project", rel, start=more["end"], following=True)
         self.assertEqual((nothing["text"], nothing["end"]), ("", more["end"]))
 
     def test_long_log_opens_at_its_tail(self):
@@ -91,15 +90,15 @@ class Browser(FakeTorchCase):
         with open(big, "w") as f:
             for i in range(60000):
                 f.write("line %06d of a long log\n" % i)
-        got = self.files.read("logs/big_1.out", start=-1)
+        got = self.files.read("project", "logs/big_1.out", start=-1)
         self.assertTrue(got["more_before"])
         self.assertLessEqual(len(got["text"]), 256 * 1024)
         self.assertTrue(got["text"].endswith("line 059999 of a long log\n"))
-        top = self.files.read("logs/big_1.out")
+        top = self.files.read("project", "logs/big_1.out")
         self.assertTrue(top["more_after"] and top["text"].startswith("line 000000"))
 
     def test_failed_job_log_is_annotated(self):
-        got = self.files.read("logs/pilot-finetune_22590102_2.err", start=-1)
+        got = self.files.read("project", "logs/pilot-finetune_22590102_2.err", start=-1)
         titles = [p["title"] for p in got["problems"]]
         self.assertIn("The GPU ran out of memory", titles)
         self.assertIn("The program stopped with a Python error", titles)
@@ -114,13 +113,13 @@ class Browser(FakeTorchCase):
         self.assertEqual(self.files.job_logs("99999999")["files"], [])
 
     def test_download_is_byte_exact(self):
-        got = self.files.download("results/demo_v1/analyze/loss.png")
+        got = self.files.download("project", "results/demo_v1/analyze/loss.png")
         self.assertTrue(got["ok"], got)
         self.assertEqual(got["data"], (self.project / "results/demo_v1/analyze/loss.png").read_bytes())
         self.assertEqual(got["content_type"], "image/png")
 
     def test_binary_file_is_not_shown_as_text(self):
-        got = self.files.read("results/demo_v1/analyze/loss.png")
+        got = self.files.read("project", "results/demo_v1/analyze/loss.png")
         self.assertTrue(got["binary"])
         self.assertEqual(got["text"], "")
 
@@ -131,28 +130,56 @@ class Browser(FakeTorchCase):
         os.symlink(outside, self.project / "escape")                 # a folder link pointing out
         os.symlink(outside / "secret.txt", self.project / "leak.txt")  # a file link pointing out
         os.symlink(self.project / "logs", self.project / "inside")   # a link that stays inside is fine
-        for attempt in (lambda: self.files.list("escape"), lambda: self.files.read("leak.txt"),
-                        lambda: self.files.read("escape/secret.txt"), lambda: self.files.download("leak.txt")):
+        for attempt in (lambda: self.files.list("project", "escape"), lambda: self.files.read("project", "leak.txt"),
+                        lambda: self.files.read("project", "escape/secret.txt"), lambda: self.files.download("project", "leak.txt")):
             got = attempt()
             self.assertFalse(got["ok"])
-            self.assertIn("outside the project folder", got["error"])
-        self.assertTrue(self.files.list("inside")["ok"])
-        listed = {e["name"]: e for e in self.files.list("")["entries"]}
+            self.assertIn("outside this folder", got["error"])
+        self.assertTrue(self.files.list("project", "inside")["ok"])
+        listed = {e["name"]: e for e in self.files.list("project", "")["entries"]}
         self.assertEqual((listed["escape"]["kind"], listed["escape"]["link_to"]), ("link", "folder"))
         for text in ("../outside/secret.txt", "/etc/passwd"):
             with self.assertRaises(Exception):
-                self.files.read(text)
+                self.files.read("project", text)
+
+    def test_own_folders_beyond_the_project(self):
+        self.assertEqual([p["key"] for p in self.files.places()], ["project", "home", "scratch", "archive"])
+        self.assertEqual({p["key"]: p["path"] for p in self.files.places()}["scratch"], "/scratch/abc1234")
+        home = self.files.list("home", "")
+        self.assertEqual(sorted(e["name"] for e in home["entries"]), ["aliases.sh", "notes.md"])
+        scratch = self.files.list("scratch", "")
+        self.assertEqual([e["name"] for e in scratch["entries"]], ["demo-project", "hf-cache"])
+        self.assertTrue(self.files.read("scratch", "demo-project/README.md")["text"].startswith("# demo-project"))
+        self.assertTrue(self.files.read("archive", "2026-summer-pilot/results.csv")["ok"])
+        self.assertTrue(self.files.download("home", "notes.md")["ok"])
+        # each place is its own fence: home cannot reach scratch, and made-up places are refused
+        os.symlink(self.tmp / "fs" / "scratch", self.tmp / "fs" / "home" / "to-scratch")
+        self.assertIn("outside this folder", self.files.list("home", "to-scratch")["error"])
+        for bad in ("root", "", "../scratch", "/etc"):
+            with self.assertRaises(Exception):
+                self.files.list(bad, "")
+
+    def test_places_without_a_project_and_custom_places(self):
+        from torchbench import config
+        bare = files.Files(self.config(remote_dir="", project_name=""), self.files.ssh)
+        self.assertEqual([p["key"] for p in bare.places()], ["home", "scratch", "archive"])
+        self.assertTrue(bare.list("scratch", "")["ok"])
+        self.assertTrue(bare.job_logs("22601411")["no_project"])
+        custom = self.config(browse_roots=[{"label": "Shared data", "path": "/scratch/abc1234/hf-cache"}])
+        self.assertEqual([(p["key"], p["label"]) for p in config.places(custom)], [("project", "demo-project"), ("place1", "Shared data")])
+        with self.assertRaises(config.ConfigError):
+            self.config(browse_roots=[{"label": "x", "path": "/scratch/a; rm -rf b"}])
 
     def test_missing_and_wrong_kind(self):
-        self.assertIn("No such file", self.files.read("nope.txt")["error"])
-        self.assertIn("not a folder", self.files.list("README.md")["error"])
-        self.assertIn("not a file", self.files.read("logs")["error"])
+        self.assertIn("No such file", self.files.read("project", "nope.txt")["error"])
+        self.assertIn("not a folder", self.files.list("project", "README.md")["error"])
+        self.assertIn("not a file", self.files.read("project", "logs")["error"])
 
     def test_file_contents_stay_out_of_the_log(self):
-        self.files.read("results/demo_v1/analyze/SUMMARY.md")
-        self.files.download("results/demo_v1/analyze/loss.png")
+        self.files.read("project", "results/demo_v1/analyze/SUMMARY.md")
+        self.files.download("project", "results/demo_v1/analyze/loss.png")
         entries = self.log.entries()
-        self.assertTrue(any("Read results/demo_v1/analyze/SUMMARY.md" == e["label"] for e in entries))
+        self.assertTrue(any("Read /scratch/abc1234/demo-project/results/demo_v1/analyze/SUMMARY.md" == e["label"] for e in entries))
         joined = " ".join(e["stdout"] for e in entries)
         self.assertNotIn("Demo run: summary", joined)
         self.assertIn("bytes of file contents", joined)
@@ -160,18 +187,18 @@ class Browser(FakeTorchCase):
 
     def test_nothing_is_written_on_the_cluster(self):
         before = sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in self.project.rglob("*"))
-        self.files.list("")
-        self.files.list("logs")
-        self.files.read("README.md")
-        self.files.read("logs/calibrate_22601411.out", start=-1)
+        self.files.list("project", "")
+        self.files.list("project", "logs")
+        self.files.read("project", "README.md")
+        self.files.read("project", "logs/calibrate_22601411.out", start=-1)
         self.files.job_logs("22601411")
-        self.files.download("README.md")
+        self.files.download("project", "README.md")
         after = sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in self.project.rglob("*"))
         self.assertEqual(before, after)
 
     def test_not_connected(self):
         self.close_login()
-        got = self.files.list("")
+        got = self.files.list("project", "")
         self.assertTrue(got["not_connected"])
         self.assertEqual(self.remote_commands(), [])
 
